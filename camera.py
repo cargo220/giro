@@ -17,7 +17,7 @@ COLORS = (
     ("파랑", "BLUE", 0, 100, -35, 0, -80, -15),  # 파랑은 A가 0 이하. 붉은 기(보라)를 넘기지 않음
     ("초록", "GREEN", 0, 100, -80, -15, 5, 70),  # 초록 LAB 초깃값
     ("빨강", "RED", 0, 100, 20, 80, 5, 60),  # 빨강 LAB 초깃값
-    ("보라", "PURPLE", 0, 100, 1, 70, -70, -10),  # 보라는 A가 양수. 파랑과 A=0에서 갈림
+    ("보라", "PURPLE", 0, 100, 0, 70, -70, 8),  # 옅은 보라도 포함. B가 0 근처여도 A가 파랑보다 붉으면 보라
     ("노랑", "YELLOW", 0, 100, -20, 20, 25, 90),  # 노랑 LAB 초깃값
 )
 
@@ -62,7 +62,8 @@ def matched_color(code):
 # 새 프레임 비중. 높을수록 블럭을 빨리 따라가고, 나머지는 한 프레임 떨림을 누른다.
 FOLLOW = 0.8
 # A·B가 이 거리보다 0에 가까우면 색이 없는 회색으로 보고 그리지 않음
-CHROMA_MIN = 12
+# 보라는 면이 옅어 12에서는 같이 있을 때 통째로 버려졌다
+CHROMA_MIN = 6
 
 
 def has_chroma(a_mean, b_mean):
@@ -177,7 +178,7 @@ sensor.skip_frames(time=2000)  # 노출이 자리 잡을 때까지 2초분 프�
 sensor.set_auto_gain(False)  # 게인을 고정해 색이 밝기에 따라 변하지 않게 함
 sensor.set_auto_whitebal(False)  # 화이트밸런스를 고정해 색 축이 흔들리지 않게 함
 # 바닥이 아니라 블럭 면이 보이도록 노출을 고정. 보라가 회색이면 이 값을 올림
-sensor.set_auto_exposure(False, exposure_us=15000)
+sensor.set_auto_exposure(False, exposure_us=5000)
 sensor.skip_frames(time=300)  # 고정 직후 몇 프레임은 아직 불안정해서 버림
 
 thresholds = [row[2:] for row in COLORS]  # 이름·글자를 뺀 LAB 여섯 숫자만 모음
