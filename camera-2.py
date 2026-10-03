@@ -1,6 +1,8 @@
-# OpenMV IDE에서 이 파일을 열고 실행한다.
-# 프레임 화면과 USB 시리얼은 IDE가 이미 붙여 둔다.
-# snapshot()은 IDE 화면으로, print()는 IDE 터미널로 간다.
+# camera.py의 복제본이다. 원본 인식은 바꾸지 않는다.
+# 컴퓨터가 프레임에서 사각형을 찾고, 색 중심이 없는 사각형만 힌트로 보낸다.
+# 그 사각형이 어두우면 노출을 올리고, 밝으면 내린다.
+# 이미 인식된 면을 잃는 방향이면 노출을 움직이지 않는다.
+# 힌트가 없으면 노출은 camera.py와 같다.
 # PC에서 이 파일을 PC 파이썬으로 돌리지 않는다.
 # 로봇으로 결과를 넘기는 핀 통신은 2차에서 따로 둔다.
 #
@@ -16,8 +18,14 @@
 # 5. 보라 면이 어둡고 다른 면이 잘리지 않았으면 노출만 늘린다.
 
 import sensor
+import struct
 import time
 from math import atan2, sqrt, cos, sin
+
+try:
+    import protocol
+except ImportError:
+    protocol = None
 
 # 검출용 LAB 상자. 이름을 정하는 기준이 아니다.
 # L의 아래를 막아 둔다. 0부터 열면 긴 노출의 검은 바닥이 파란 잡음으로 상자에 들어온다.
@@ -52,6 +60,10 @@ DRAW = {
     "보라": (180, 60, 255),
     "노랑": (255, 220, 0),
 }
+NAME_ID = {"파랑": 0, "초록": 1, "빨강": 2, "보라": 3, "노랑": 4}
+# 컴퓨터 힌트. 0은 없음, 1은 색 없는 어두운 사각형, 2는 밝은 사각형, 3은 둘 다.
+HINT_MARK = {0: "", 1: "DARK", 2: "BRIGHT", 3: "BOTH"}
+HINT_TEXT = {0: "없음", 1: "어두움", 2: "밝음", 3: "둘다"}
 
 # 원형 거리가 이 값보다 크면 다섯 색의 사이(청록 가장자리 등)로 보고 버린다.
 MAX_HUE_DEG = 50.0
@@ -1332,6 +1344,26 @@ def nearest_held(held, quad):
     return best
 
 
+def exposure_factor(clipping, dark_face, purple_dark, all_dark, no_faces, exposure_us, hint):
+    # 이미 붙은 색을 지키면서, 색이 없는 사각형 쪽으로만 노출을 한 칸 움직인다.
+    # 둘 다이면 한 노출로 같이 살릴 수 없으므로 둔다.
+    missed_dark = hint == 1
+    missed_bright = hint == 2
+    if hint == 3:
+        return None
+    if clipping and not dark_face and not purple_dark and not missed_dark:
+        return 0.8
+    if (purple_dark or missed_dark) and not clipping:
+        return 1.2
+    if all_dark:
+        return 1.2
+    if missed_bright and not dark_face and not purple_dark:
+        return 0.8
+    if no_faces and exposure_us < IDLE_EXPO and not missed_bright:
+        return 1.15
+    return None
+
+
 def step_exposure(factor):
     # 노출 시간만 factor배로 바꾼다. 게인과 화이트밸런스는 건드리지 않는다.
     # 게인은 그대로 두고 노출만 움직인다.
@@ -1357,6 +1389,84 @@ def step_exposure(factor):
     else:
         expo_state = "감소"
     print("노출 %s %d us" % (expo_state, exposure_us))
+
+
+class HintChannel:
+    # 컴퓨터가 쓴 힌트 한 바이트를 다음 노출 판단까지 들고 있는다.
+    def __init__(self):
+        self.cmd = 0
+        self.stamp = 0
+        self.seen = False
+
+    def size(self):
+        return 1
+
+    def read(self, offset, size):
+        return bytes([self.cmd])[offset:offset + size]
+
+    def write(self, offset, data):
+        # 펌웨어는 0을 실패로 본다. 한 바이트를 받았으면 1을 돌려준다.
+        if data:
+            self.cmd = data[0]
+            self.stamp = time.ticks_ms()
+            self.seen = True
+        return 1
+
+    def poll(self):
+        return True
+
+    def fresh(self):
+        # 컴퓨터가 멈추면 마지막 힌트로 노출을 계속 밀지 않는다.
+        if not self.seen:
+            return 0
+        if time.ticks_diff(time.ticks_ms(), self.stamp) > 500:
+            return 0
+        return self.cmd
+
+
+class FaceChannel:
+    # 이번 프레임에 색이 붙은 면의 중심. 컴퓨터가 사각형과 겹쳐 본다.
+    def __init__(self):
+        self.buf = b"\x00\x00"
+        self.fresh = False
+        self.seq = 0
+
+    def publish(self, samples):
+        n = len(samples)
+        if n > 12:
+            n = 12
+        self.seq = (self.seq + 1) & 255
+        buf = bytearray(2 + n * 5)
+        buf[0] = self.seq
+        buf[1] = n
+        i = 0
+        while i < n:
+            cx, cy, nid = samples[i]
+            struct.pack_into("<HHB", buf, 2 + i * 5, int(cx) & 65535, int(cy) & 65535, int(nid) & 255)
+            i += 1
+        self.buf = bytes(buf)
+        self.fresh = True
+
+    def size(self):
+        return len(self.buf)
+
+    def read(self, offset, size):
+        self.fresh = False
+        return self.buf[offset:offset + size]
+
+    def poll(self):
+        return self.fresh
+
+
+hint_channel = HintChannel()
+face_channel = FaceChannel()
+if protocol is not None:
+    try:
+        protocol.register(name="hint", backend=hint_channel)
+        protocol.register(name="faces", backend=face_channel)
+    except Exception as exc:
+        print("채널 없음 %s" % exc)
+        protocol = None
 
 
 # 2초는 화이트밸런스만 앉힌다. 그때 읽힌 게인과 노출은 쓰지 않는다.
@@ -1389,6 +1499,7 @@ sensor.skip_frames(time=300)
 thresholds = [row[2:] for row in GATES]
 clock = time.clock()
 last_names = None
+last_hint = 0
 held = []
 split_prev = []
 settle = 0
@@ -1407,6 +1518,7 @@ while True:
 
     names = []
     details = []
+    samples = []
     next_held = []
     accepted_l = []
     purple_l = []
@@ -1447,6 +1559,7 @@ while True:
         next_held.append(quad)
         names.append(name)
         details.append((name, l_med, angle, chroma))
+        samples.append((cx, cy, NAME_ID[name]))
         draw_face(img, name, label, quad, cx, cy)
         if name == "보라":
             purple_memory = (_rect, quad, cx, cy, 0)
@@ -1485,6 +1598,7 @@ while True:
         if miss <= PURPLE_MISS_MAX:
             names.append("보라")
             details.append(("보라", l_med, angle, chroma))
+            samples.append((cx, cy, NAME_ID["보라"]))
             draw_face(img, "보라", "PURPLE", quad, cx, cy)
             next_held.append(quad)
             purple_memory = (rect, quad, cx, cy, miss)
@@ -1493,28 +1607,31 @@ while True:
 
     held = next_held
     split_prev = split_next
+    face_channel.publish(samples)
+    hint = hint_channel.fresh()
+    if hint != last_hint:
+        print("힌트 %s" % HINT_TEXT.get(hint, "없음"))
+        last_hint = hint
 
     # 이번 프레임의 면 밝기로 다음 노출을 정한다. 화면 평균은 쓰지 않는다.
     # 노출은 블럭 면만 본다. 천이 검다고 화면 평균에 맞추면
     # 노출이 길어지고, 바닥의 파란 잡음이 블럭으로 잡힌다.
+    # 색이 없는 사각형은 컴퓨터 힌트로만 더한다. 이미 붙은 색을 밀어내지 않는다.
     clipping = seen_uq and max(seen_uq) >= CLIP_L
     purple_dark = purple_l and min(purple_l) < PURPLE_L_AIM
     dark_face = accepted_l and min(accepted_l) <= DARK_L
+    all_dark = bool(accepted_l) and max(accepted_l) <= DARK_L
     if settle > 0:
         settle -= 1
-    elif clipping and not dark_face and not purple_dark:
-        # 노란 면만 밝고 파랑·보라가 이미 어두우면 노출을 더 줄이지 않는다.
-        # 줄이면 파랑 각이 보라 쪽으로 붙고, 보라 면은 이름에서 빠진다.
-        step_exposure(0.8)
-    elif purple_dark and not clipping:
-        # 보라만 어둡고 다른 면은 아직 안 잘렸으면 노출을 올린다.
-        step_exposure(1.2)
-    elif accepted_l and max(accepted_l) <= DARK_L:
-        step_exposure(1.2)
-    elif not seen_l and exposure_us < IDLE_EXPO:
-        step_exposure(1.15)
     else:
-        expo_state = "유지"
+        factor = exposure_factor(
+            bool(clipping), bool(dark_face), bool(purple_dark), all_dark,
+            not seen_l, exposure_us, hint,
+        )
+        if factor is None:
+            expo_state = "유지"
+        else:
+            step_exposure(factor)
 
     # 색 집합이 바뀔 때만 터미널에 남긴다. 화면에는 프레임 속도와 노출을 그린다.
     if names:
@@ -1536,3 +1653,6 @@ while True:
         color=(255, 255, 255),
         scale=2,
     )
+    mark = HINT_MARK.get(hint, "")
+    if mark:
+        img.draw_string((2, 38), mark, color=(255, 255, 255), scale=2)
