@@ -15,8 +15,9 @@
 #    사이가 비어 밀도가 낮으면 넓은 파랑 칸만 남긴다.
 # 3. 면 가운데의 각도로 이름을 붙인다. 가장자리면 각을 되돌린다.
 #    테두리는 그 각의 부채꼴만 다시 찾아 회전 꼭짓점으로 그린다.
-# 4. 보라 면 위에 절반 넘게 겹친 파랑만 버린다. 파란 면 위의 보라도 버린다. 보라가 한 프레임 빠지면 직전 면을 유지한다.
-# 5. 보라 면이 어둡고 다른 면이 잘리지 않았으면 노출만 늘린다.
+# 4. 보라 면 위에 절반 넘게 겹친 파랑만 버린다. 파란 면 위의 보라도 버린다.
+#    보라 상자가 빠져도 직전 자리를 다시 재고, 아니면 최대 여섯 프레임 남긴다.
+# 5. 첫 면으로 노출 창을 한 번 고른 뒤, 면 밝기만 보고 노출을 움직인다.
 
 import sensor
 import struct
@@ -102,17 +103,20 @@ DARK_L = 28
 # 보라 면이 이보다 어두우면, 다른 면이 잘리지 않은 한 노출을 올린다.
 # 노란 면이 같이 밝아도 보라는 L 20 근처에서 이름이 빠졌다.
 PURPLE_L_AIM = 36
-EXPO_MIN = 5000
-# 어두운 천은 화면 평균을 끌어내린다. 거기에 맞추면 노출이 16 ms까지 올라
-# 바닥 잡음이 파란 블럭이 되었다. 블럭이 이미 보이는 밝기에서 멈춘다.
-EXPO_MAX = 11000
-# 켜질 때의 노출. 상한과 따로 둔다.
-EXPO_START = 10000
+# 창의 폭은 5000 µs. 7500에서 본 첫 면으로 둘 중 하나를 고르고 다시 옮기지 않는다.
+# 잘림만 있으면 조명이 밝아 낮은 창. 그 밖은 높은 창.
+# 10000 µs를 넘기면 바닥 잡음이 파란 블럭이 되었다.
+EXPO_LOW_MIN = 2500
+EXPO_LOW_MAX = 7500
+EXPO_HIGH_MIN = 5000
+EXPO_HIGH_MAX = 10000
+EXPO_MIN = EXPO_HIGH_MIN
+EXPO_MAX = EXPO_HIGH_MAX
+# 켜질 때의 노출. 낮은 창의 상한이자 높은 창의 한가운데다.
+EXPO_START = 7500
 # 한 번에 움직이는 노출 시간. 배율로 곱하지 않는다.
-EXPO_STEP = 100
+EXPO_STEP = 150
 EXPO_UP = 300
-# 블럭이 하나도 없을 때 이 값까지만 올리고, 그 다음은 천이 어둡다고 더 열지 않는다.
-IDLE_EXPO = 4000
 # 켜질 때 장면 밝기로 게인을 고르지 않는다.
 # 어두운 블럭을 보고 잠긴 값이 23.8 dB였고, 그때 노출은 8000 µs에서 아래로 내려갔다.
 GAIN_DB = 24.0
@@ -222,7 +226,7 @@ def blob_value(blob, name):
 
 def classify_angle(a, b, l_med, purple_soft=False):
     # 면의 색 이름을 정한다. 상자에 들어간 것만으로는 이름이 아니다.
-    # purple_soft는 이미 그린 보라가 한 프레임 어두워진 때만 쓴다.
+    # purple_soft는 이미 그린 보라의 직전 자리를 다시 잴 때만 쓴다.
     # 새 덩어리에 쓰면 천의 옅은 보라 잡음이 사각형이 된다.
     # 바닥은 반지름이 작거나 L이 낮다. 밝기가 달라져도 이름은 각도로 정한다.
     min_l = 12 if purple_soft else MIN_FACE_L
@@ -1148,7 +1152,7 @@ def push_face(img, faces, seen_l, seen_uq, rect, corners, cx, cy, purple_soft, p
     if int(rect[2]) < MIN_SIDE or int(rect[3]) < MIN_SIDE:
         return
     chroma = sqrt(a_med * a_med + b_med * b_med)
-    faces.append((name, label, angle, l_med, chroma, quad, cx, cy, rect))
+    faces.append((name, label, angle, l_med, chroma, quad, cx, cy, rect, l_uq))
 
 
 def sparse_blue_parts(img, rect):
@@ -1534,7 +1538,7 @@ def nearest_held(held, quad):
     return best
 
 
-def exposure_factor(clipping, dark_face, purple_dark, all_dark, no_faces, exposure_us, hint):
+def exposure_factor(clipping, dark_face, purple_dark, all_dark, hint):
     # 이미 붙은 색을 지키면서, 색이 없는 사각형 쪽으로만 노출을 한 칸 움직인다.
     # 둘 다이면 한 노출로 같이 살릴 수 없으므로 둔다.
     # 반환은 (증감 µs, 분기 이름). 증감이 None이면 노출을 두지 않는다.
@@ -1554,8 +1558,6 @@ def exposure_factor(clipping, dark_face, purple_dark, all_dark, no_faces, exposu
         return EXPO_UP, "증가 전부어두움"
     if missed_bright and not dark_face and not purple_dark:
         return -EXPO_STEP, "감소 힌트밝음"
-    if no_faces and exposure_us < IDLE_EXPO and not missed_bright:
-        return EXPO_UP, "증가 빈화면"
     if clipping and dark_face:
         return None, "유지 잘림+어두운면"
     if clipping and purple_dark:
@@ -1565,6 +1567,19 @@ def exposure_factor(clipping, dark_face, purple_dark, all_dark, no_faces, exposu
     if missed_bright:
         return None, "유지 힌트밝음"
     return None, "유지 중간"
+
+
+def lock_window(face_clip, dark_face, purple_dark):
+    # 7500 µs에서 이름이 붙은 첫 면으로 창을 한 번 고른다.
+    # 잘림이고 어두운 면과 어두운 보라가 없으면 조명이 밝다.
+    global EXPO_MIN, EXPO_MAX
+    if face_clip and not dark_face and not purple_dark:
+        EXPO_MIN = EXPO_LOW_MIN
+        EXPO_MAX = EXPO_LOW_MAX
+    else:
+        EXPO_MIN = EXPO_HIGH_MIN
+        EXPO_MAX = EXPO_HIGH_MAX
+    print("노출창 %d-%d us" % (EXPO_MIN, EXPO_MAX))
 
 
 def step_exposure(delta):
@@ -1677,7 +1692,7 @@ if protocol is not None:
         protocol = None
 
 
-# 2초는 화이트밸런스만 앉힌다. 그때 읽힌 게인과 노출은 쓰지 않는다.
+# 시작 2초 동안 장면이 옮긴 자동 화이트밸런스는 쓰지 않는다. 그때 읽힌 게인과 노출도 쓰지 않는다.
 # 그 값을 잠그면 형광등을 본 실행은 어둡게, 어두운 블럭을 본 실행은 밝게 고정된다.
 sensor.reset()
 sensor.set_pixformat(sensor.RGB565)  # H7에서 컬러 프레임 버퍼 한도인 320×240
@@ -1712,6 +1727,8 @@ last_hint = 0
 held = []
 split_prev = []
 settle = 0
+window_wait = EXPO_SETTLE
+window_ready = False
 expo_state = "유지"
 last_expo_why = None
 purple_memory = None  # (rect, quad, cx, cy, miss)
@@ -1731,6 +1748,7 @@ while True:
     samples = []
     next_held = []
     accepted_l = []
+    accepted_uq = []
     purple_l = []
     seen_l = []
     seen_uq = []
@@ -1753,7 +1771,7 @@ while True:
     blue_rects = []
     i = 0
     while i < len(faces):
-        name, label, angle, l_med, chroma, quad, cx, cy, _rect = faces[i]
+        name, label, angle, l_med, chroma, quad, cx, cy, _rect, l_uq = faces[i]
         if hidden[i]:
             if (
                 name == "보라"
@@ -1766,6 +1784,7 @@ while True:
         if name == "파랑":
             blue_rects.append(_rect)
         accepted_l.append(l_med)
+        accepted_uq.append(l_uq)
         next_held.append(quad)
         names.append(name)
         details.append((name, l_med, angle, chroma))
@@ -1790,6 +1809,7 @@ while True:
         a_med = read_stat(stats, "a_median")
         b_med = read_stat(stats, "b_median")
         l_med = read_stat(stats, "l_median")
+        l_uq = read_stat(stats, "l_uq")
         a_med, b_med = correct_edge(a_med, b_med, cx, cy)
         named = classify_angle(a_med, b_med, l_med, purple_soft=True)
         if named is not None and named[0] == "보라":
@@ -1799,6 +1819,7 @@ while True:
             # 검출이 빠져도 이 면이 어두우면 노출을 줄이지 않는다.
             # 노란 면만 보고 줄이면 보라가 더 자주 빠진다.
             accepted_l.append(l_med)
+            accepted_uq.append(l_uq)
             purple_l.append(l_med)
         else:
             miss += 1
@@ -1831,18 +1852,29 @@ while True:
     purple_dark = purple_l and min(purple_l) < PURPLE_L_AIM
     dark_face = accepted_l and min(accepted_l) <= DARK_L
     all_dark = bool(accepted_l) and max(accepted_l) <= DARK_L
-    if settle > 0:
-        why = "대기%d" % settle
-        settle -= 1
+    face_clip = bool(accepted_uq) and max(accepted_uq) >= CLIP_L
+    if window_wait > 0:
+        # 7500 µs가 센서에 반영된 뒤의 면만 창을 고르는 데 쓴다.
+        why = "준비%d" % window_wait
+        window_wait -= 1
+    elif not window_ready and not accepted_l:
+        why = "창 대기"
+        expo_state = "유지"
     else:
-        delta, why = exposure_factor(
-            bool(clipping), bool(dark_face), bool(purple_dark), all_dark,
-            not seen_l, exposure_us, hint,
-        )
-        if delta is None:
-            expo_state = "유지"
+        if not window_ready:
+            lock_window(face_clip, bool(dark_face), bool(purple_dark))
+            window_ready = True
+        if settle > 0:
+            why = "대기%d" % settle
+            settle -= 1
         else:
-            step_exposure(delta)
+            delta, why = exposure_factor(
+                bool(clipping), bool(dark_face), bool(purple_dark), all_dark, hint,
+            )
+            if delta is None:
+                expo_state = "유지"
+            else:
+                step_exposure(delta)
     # 같은 분기가 매 프레임 반복되지 않게, 분기가 바뀔 때만 남긴다.
     # 실제로 시간이 바뀌는 줄은 step_exposure가 따로 남긴다.
     if why != last_expo_why:
