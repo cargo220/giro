@@ -14,6 +14,7 @@
 # 2. 한 덩어리 안에서 이름이 여럿이면 각 색의 칸을 감싼다. 이름이 같으면 한 면이다.
 #    사이가 비어 밀도가 낮으면 넓은 파랑 칸만 남긴다.
 # 3. 면 가운데의 각도로 이름을 붙인다. 가장자리면 각을 되돌린다.
+#    테두리는 그 각의 부채꼴만 다시 찾아 회전 꼭짓점으로 그린다.
 # 4. 보라 면 위에 절반 넘게 겹친 파랑만 버린다. 파란 면 위의 보라도 버린다. 보라가 한 프레임 빠지면 직전 면을 유지한다.
 # 5. 보라 면이 어둡고 다른 면이 잘리지 않았으면 노출만 늘린다.
 
@@ -67,13 +68,25 @@ HINT_TEXT = {0: "없음", 1: "어두움", 2: "밝음", 3: "둘다"}
 
 # 원형 거리가 이 값보다 크면 다섯 색의 사이(청록 가장자리 등)로 보고 버린다.
 MAX_HUE_DEG = 50.0
-# 반지름 7은 검은 바닥의 파란 잡음도 통과했다. 블럭 면은 이보다 진하다.
-CHROMA_MIN = 16
+# 반지름 16은 노출이 길어진 검은 천도 통과해 사각형이 됐다.
+# 블럭 면은 이보다 진하다. 5000 µs 보라의 유효 반지름은 21이다.
+CHROMA_MIN = 20
 # 이보다 어두운 면은 바닥이다. 이름은 밝기로 정하지 않고, 바닥만 거른다.
 # 22면 노출이 내려간 보라 면(L 20 근처)이 이름에서 빠졌다.
 MIN_FACE_L = 16
+# 이보다 짧은 변은 천의 잡음 덩어리다. 블럭 면은 더 길다.
+MIN_SIDE = 20
 # 외접 상자 대비 채운 비율. 바닥 잡음이 뭉친 상자는 속이 비어 있다.
 MIN_DENSITY = 0.4
+# 테두리를 다시 맞출 때의 각 반폭과 반지름 비율.
+# 같은 페인트는 각이 남고 반지름만 밝기에 따라 변한다.
+# 파랑과 보라는 각이 가까워 반폭을 줄이고, 반지름도 그 면 근처에만 연다.
+TIGHT_HALF_DEG = 16.0
+TIGHT_HALF_NEAR = 8.0
+TIGHT_C0 = 0.45
+TIGHT_C1 = 1.35
+TIGHT_C0_NEAR = 0.82
+TIGHT_C1_NEAR = 1.20
 # 파란 블럭은 밝을 때 -89°, 어두우면 -74°이고 반지름은 42보다 크다.
 # 보라 블럭은 -69°~-61°이고 반지름은 그 아래다.
 # -76° 이하는 파랑이다. -68° 이상은 보리다.
@@ -89,15 +102,26 @@ DARK_L = 28
 # 보라 면이 이보다 어두우면, 다른 면이 잘리지 않은 한 노출을 올린다.
 # 노란 면이 같이 밝아도 보라는 L 20 근처에서 이름이 빠졌다.
 PURPLE_L_AIM = 36
-EXPO_MIN = 500
+EXPO_MIN = 5000
 # 어두운 천은 화면 평균을 끌어내린다. 거기에 맞추면 노출이 16 ms까지 올라
 # 바닥 잡음이 파란 블럭이 되었다. 블럭이 이미 보이는 밝기에서 멈춘다.
-EXPO_MAX = 8000
+EXPO_MAX = 11000
+# 켜질 때의 노출. 상한과 따로 둔다.
+EXPO_START = 10000
+# 한 번에 움직이는 노출 시간. 배율로 곱하지 않는다.
+EXPO_STEP = 100
+EXPO_UP = 300
 # 블럭이 하나도 없을 때 이 값까지만 올리고, 그 다음은 천이 어둡다고 더 열지 않는다.
 IDLE_EXPO = 4000
 # 켜질 때 장면 밝기로 게인을 고르지 않는다.
 # 어두운 블럭을 보고 잠긴 값이 23.8 dB였고, 그때 노출은 8000 µs에서 아래로 내려갔다.
 GAIN_DB = 24.0
+# OV5640 초기 레지스터 0x3400. dB = 20*log10(레지스터).
+# 빨강 0x0680 → 64.4, 초록 0x0400 → 60.2, 파랑 0x0600 → 63.7.
+# 0 dB는 레지스터 1이라 화면이 검게 나간다.
+RGB_BASE_DB = (64.4, 60.2, 63.7)
+# 위 기본에서 초록만 이만큼 낮춘다. 장면이 옮긴 자동 비율에서 빼지 않는다.
+GREEN_GAIN_CUT = 0.2
 EXPO_SETTLE = 5
 # QVGA 광학 중심. 색수차는 중심에서 멀수록 커진다.
 OPT_X = 160.0
@@ -198,12 +222,11 @@ def blob_value(blob, name):
 
 def classify_angle(a, b, l_med, purple_soft=False):
     # 면의 색 이름을 정한다. 상자에 들어간 것만으로는 이름이 아니다.
-    # purple_soft는 보라 상자에서 온 어두운 면만 바닥 기준을 낮출 때 쓴다.
+    # purple_soft는 이미 그린 보라가 한 프레임 어두워진 때만 쓴다.
+    # 새 덩어리에 쓰면 천의 옅은 보라 잡음이 사각형이 된다.
     # 바닥은 반지름이 작거나 L이 낮다. 밝기가 달라져도 이름은 각도로 정한다.
-    # 보라는 다른 블럭보다 덜 진해서, 그 상자에서 온 덩어리만 바닥 기준을 낮춘다.
-    # 노출이 낮으면 L 10, 반지름 8까지 내려간다. 여기서 이름을 남겨야 노출을 올릴 수 있다.
-    min_l = 8 if purple_soft else MIN_FACE_L
-    min_c = 8 if purple_soft else CHROMA_MIN
+    min_l = 12 if purple_soft else MIN_FACE_L
+    min_c = 16 if purple_soft else CHROMA_MIN
     if l_med < min_l:
         return None
     if a * a + b * b < min_c * min_c:
@@ -1102,11 +1125,11 @@ def push_face(img, faces, seen_l, seen_uq, rect, corners, cx, cy, purple_soft, p
         return
     roi = face_roi(rect)
     stats = img.get_statistics(roi=roi, l_bins=32, a_bins=64, b_bins=64)
-    a_med = read_stat(stats, "a_median")
-    b_med = read_stat(stats, "b_median")
+    a_raw = read_stat(stats, "a_median")
+    b_raw = read_stat(stats, "b_median")
     l_med = read_stat(stats, "l_median")
     l_uq = read_stat(stats, "l_uq")
-    a_med, b_med = correct_edge(a_med, b_med, cx, cy)
+    a_med, b_med = correct_edge(a_raw, b_raw, cx, cy)
     seen_l.append(l_med)
     seen_uq.append(l_uq)
     named = classify_angle(a_med, b_med, l_med, purple_soft=purple_soft)
@@ -1115,9 +1138,14 @@ def push_face(img, faces, seen_l, seen_uq, rect, corners, cx, cy, purple_soft, p
     name, label, angle, _dist = named
     if purple_only and name != "보라":
         return
+    fitted = tight_corners(img, rect, a_raw, b_raw, name)
+    if fitted is not None:
+        corners, cx, cy, rect = fitted
     quad = order_quad(corners)
     quad = smooth_quad(nearest_held(held, quad), quad)
     if is_ribbon(quad):
+        return
+    if int(rect[2]) < MIN_SIDE or int(rect[3]) < MIN_SIDE:
         return
     chroma = sqrt(a_med * a_med + b_med * b_med)
     faces.append((name, label, angle, l_med, chroma, quad, cx, cy, rect))
@@ -1173,6 +1201,168 @@ def sparse_blue_parts(img, rect):
     if named is None or named[0] != "파랑":
         return None
     return (piece,)
+
+
+def _ring_box(angle, c0, c1, half):
+    # 각·반지름 부채꼴의 A, B 극값. 축을 지나면 그 방향의 끝도 넣는다.
+    samples = []
+    offs = (-half, -half * 0.5, 0.0, half * 0.5, half)
+    for off in offs:
+        rad = (angle + off) / RAD2DEG
+        ca = cos(rad)
+        sa = sin(rad)
+        samples.append((c0 * ca, c0 * sa))
+        samples.append((c1 * ca, c1 * sa))
+    for axis in (0.0, 90.0, -90.0, 180.0):
+        delta = axis - angle
+        if delta > 180.0:
+            delta -= 360.0
+        elif delta < -180.0:
+            delta += 360.0
+        if delta < -half or delta > half:
+            continue
+        rad = axis / RAD2DEG
+        ca = cos(rad)
+        sa = sin(rad)
+        samples.append((c0 * ca, c0 * sa))
+        samples.append((c1 * ca, c1 * sa))
+    amin = samples[0][0]
+    amax = amin
+    bmin = samples[0][1]
+    bmax = bmin
+    for a, b in samples:
+        if a < amin:
+            amin = a
+        if a > amax:
+            amax = a
+        if b < bmin:
+            bmin = b
+        if b > bmax:
+            bmax = b
+    return amin, amax, bmin, bmax
+
+
+def paint_gate(a_raw, b_raw, name):
+    # 이 면의 각 근처만 연다. 검출 상자는 이웃 페인트의 A, B도 통과시킨다.
+    # 밝기가 변하면 반지름이 변하고 각은 남으므로, 각은 좁히고 반지름은 따라간다.
+    # 파랑과 보라는 각이 겹쳐 반지름으로 갈리므로 그 폭을 더 좁힌다.
+    # 가장자리 보정은 넣지 않는다. find_blobs가 보는 값은 보정 전 A, B다.
+    row = None
+    for gate in GATES:
+        if gate[0] == name:
+            row = gate
+            break
+    if row is None:
+        return None
+    c = sqrt(a_raw * a_raw + b_raw * b_raw)
+    if c < 12.0:
+        return None
+    near = name == "파랑" or name == "보라"
+    if near:
+        half = TIGHT_HALF_NEAR
+        c0 = c * TIGHT_C0_NEAR
+        c1 = c * TIGHT_C1_NEAR
+    else:
+        half = TIGHT_HALF_DEG
+        c0 = c * TIGHT_C0
+        c1 = c * TIGHT_C1
+    if c0 < 10.0:
+        c0 = 10.0
+    if c1 > 120.0:
+        c1 = 120.0
+    if c1 < c0 + 6.0:
+        c1 = c0 + 6.0
+    angle = atan2(b_raw, a_raw) * RAD2DEG
+    amin, amax, bmin, bmax = _ring_box(angle, c0, c1, half)
+    amin = int(amin) - 1
+    amax = int(amax) + 1
+    bmin = int(bmin) - 1
+    bmax = int(bmax) + 1
+    if amin < row[4]:
+        amin = row[4]
+    if amax > row[5]:
+        amax = row[5]
+    if bmin < row[6]:
+        bmin = row[6]
+    if bmax > row[7]:
+        bmax = row[7]
+    if amin < -128:
+        amin = -128
+    if amax > 127:
+        amax = 127
+    if bmin < -128:
+        bmin = -128
+    if bmax > 127:
+        bmax = 127
+    if amax - amin < 4 or bmax - bmin < 4:
+        return None
+    return (row[2], row[3], amin, amax, bmin, bmax)
+
+
+def tight_corners(img, rect, a_raw, b_raw, name):
+    # 이 면의 각 근처만 다시 찾아 회전 꼭짓점을 그 페인트로 줄인다.
+    # 넓은 색 상자는 맞닿은 이웃까지 통과시켜 테두리가 옆 블럭을 덮는다.
+    gate = paint_gate(a_raw, b_raw, name)
+    if gate is None:
+        return None
+    x, y, w, h = int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])
+    x -= 2
+    y -= 2
+    w += 4
+    h += 4
+    if x < 0:
+        w += x
+        x = 0
+    if y < 0:
+        h += y
+        y = 0
+    iw = img.width()
+    ih = img.height()
+    if x + w > iw:
+        w = iw - x
+    if y + h > ih:
+        h = ih - y
+    if w < 8 or h < 8:
+        return None
+    blobs = img.find_blobs(
+        [gate],
+        roi=(x, y, w, h),
+        pixels_threshold=30,
+        area_threshold=50,
+        merge=True,
+        margin=3,
+        x_stride=1,
+        y_stride=1,
+    )
+    if not blobs:
+        return None
+    blob = None
+    best_px = 0
+    for item in blobs:
+        pixels = blob_value(item, "pixels")
+        if pixels > best_px:
+            best_px = pixels
+            blob = item
+    if blob is None:
+        return None
+    # 45도로 선 정사각형은 축에 맞춘 상자의 절반쯤만 채운다.
+    # 여기서 거르면 이웃까지 감싼 넓은 테두리로 돌아간다.
+    if blob_value(blob, "density") < 0.2:
+        return None
+    bw = blob_value(blob, "w")
+    bh = blob_value(blob, "h")
+    if bw < 10 or bh < 10:
+        return None
+    cx = blob_value(blob, "cx")
+    cy = blob_value(blob, "cy")
+    if not covers(rect, cx, cy, 4):
+        return None
+    corners = blob_value(blob, "min_corners")
+    if corners is None:
+        return None
+    raw = blob_value(blob, "rect")
+    fitted = (int(raw[0]), int(raw[1]), int(raw[2]), int(raw[3]))
+    return corners, cx, cy, fitted
 
 
 def take_blob(img, blob, faces, seen_l, seen_uq, purple_only, split_prev, split_next):
@@ -1243,7 +1433,7 @@ def take_blob(img, blob, faces, seen_l, seen_uq, purple_only, split_prev, split_
             corners,
             cx,
             cy,
-            purple_blob,
+            False,
             purple_only,
         )
 
@@ -1347,35 +1537,53 @@ def nearest_held(held, quad):
 def exposure_factor(clipping, dark_face, purple_dark, all_dark, no_faces, exposure_us, hint):
     # 이미 붙은 색을 지키면서, 색이 없는 사각형 쪽으로만 노출을 한 칸 움직인다.
     # 둘 다이면 한 노출로 같이 살릴 수 없으므로 둔다.
+    # 반환은 (증감 µs, 분기 이름). 증감이 None이면 노출을 두지 않는다.
     missed_dark = hint == 1
     missed_bright = hint == 2
     if hint == 3:
-        return None
+        return None, "유지 힌트둘다"
     if clipping and not dark_face and not purple_dark and not missed_dark:
-        return 0.8
+        return -EXPO_STEP, "감소 잘림"
     if (purple_dark or missed_dark) and not clipping:
-        return 1.2
+        if purple_dark and missed_dark:
+            return EXPO_UP, "증가 보라+힌트"
+        if purple_dark:
+            return EXPO_UP, "증가 보라"
+        return EXPO_UP, "증가 힌트어두움"
     if all_dark:
-        return 1.2
+        return EXPO_UP, "증가 전부어두움"
     if missed_bright and not dark_face and not purple_dark:
-        return 0.8
+        return -EXPO_STEP, "감소 힌트밝음"
     if no_faces and exposure_us < IDLE_EXPO and not missed_bright:
-        return 1.15
-    return None
+        return EXPO_UP, "증가 빈화면"
+    if clipping and dark_face:
+        return None, "유지 잘림+어두운면"
+    if clipping and purple_dark:
+        return None, "유지 잘림+보라"
+    if clipping and missed_dark:
+        return None, "유지 잘림+힌트어두움"
+    if missed_bright:
+        return None, "유지 힌트밝음"
+    return None, "유지 중간"
 
 
-def step_exposure(factor):
-    # 노출 시간만 factor배로 바꾼다. 게인과 화이트밸런스는 건드리지 않는다.
+def step_exposure(delta):
+    # 노출 시간만 delta µs만큼 바꾼다. 게인과 화이트밸런스는 건드리지 않는다.
     # 게인은 그대로 두고 노출만 움직인다.
     # 게인을 올리면 빛과 읽기 잡음이 같이 커지고, 노출을 늘리면 광자가 더 쌓인다.
     global exposure_us, settle, expo_state
-    nxt = int(exposure_us * factor)
+    prev = exposure_us
+    nxt = prev + delta
+    note = ""
     if nxt < EXPO_MIN:
         nxt = EXPO_MIN
+        note = " 하한맞춤"
     elif nxt > EXPO_MAX:
         nxt = EXPO_MAX
-    if nxt == exposure_us:
-        expo_state = "하한" if factor < 1.0 else "상한"
+        note = " 상한맞춤"
+    if nxt == prev:
+        expo_state = "하한" if delta < 0 else "상한"
+        print("노출 한계 %s %d us  %+d%s" % (expo_state, prev, delta, note))
         return
     exposure_us = nxt
     sensor.set_auto_exposure(False, exposure_us=exposure_us)
@@ -1384,11 +1592,11 @@ def step_exposure(factor):
         expo_state = "하한"
     elif exposure_us >= EXPO_MAX:
         expo_state = "상한"
-    elif factor > 1.0:
+    elif delta > 0:
         expo_state = "증가"
     else:
         expo_state = "감소"
-    print("노출 %s %d us" % (expo_state, exposure_us))
+    print("노출 %s %d→%d us  %+d%s" % (expo_state, prev, exposure_us, delta, note))
 
 
 class HintChannel:
@@ -1476,23 +1684,24 @@ sensor.set_pixformat(sensor.RGB565)  # H7에서 컬러 프레임 버퍼 한도�
 sensor.set_framesize(sensor.QVGA)
 sensor.skip_frames(time=2000)
 
-# 빨간 블럭이 화면을 채울 때 화이트밸런스가 회색점을 옮겨
-# 나머지 색의 각도가 같이 돌아가지 않게 그 비율만 잠근다.
-rgb_gain = None
-try:
-    rgb_gain = sensor.get_rgb_gain_db()
-except Exception:
-    rgb_gain = None
+# 채널은 센서 초기값이다. 시작 2초에 장면이 옮긴 자동 비율은 쓰지 않는다.
+# 0 dB를 쓰면 레지스터가 1이 되어 화면이 검게 나간다.
+r_db, g_db, b_db = RGB_BASE_DB
+print("기본 채널 R %.1f  G %.1f  B %.1f dB" % (r_db, g_db, b_db))
+g_db -= GREEN_GAIN_CUT
+rgb_gain = (r_db, g_db, b_db)
+print("잠금 채널 R %.1f  G %.1f  B %.1f dB" % rgb_gain)
 
 gain_db = GAIN_DB
 sensor.set_auto_gain(False, gain_db=gain_db)
 sensor.skip_frames(time=200)
-if rgb_gain is None:
-    sensor.set_auto_whitebal(False)
-else:
+try:
     sensor.set_auto_whitebal(False, rgb_gain_db=rgb_gain)
+except Exception:
+    sensor.set_auto_whitebal(False)
+    print("채널 게인을 쓰지 못함")
 sensor.skip_frames(time=200)
-exposure_us = EXPO_MAX
+exposure_us = EXPO_START
 sensor.set_auto_exposure(False, exposure_us=exposure_us)
 sensor.skip_frames(time=300)
 
@@ -1504,6 +1713,7 @@ held = []
 split_prev = []
 settle = 0
 expo_state = "유지"
+last_expo_why = None
 purple_memory = None  # (rect, quad, cx, cy, miss)
 print("잠금 노출 %d us 게인 %.1f dB" % (exposure_us, gain_db))
 
@@ -1622,16 +1832,26 @@ while True:
     dark_face = accepted_l and min(accepted_l) <= DARK_L
     all_dark = bool(accepted_l) and max(accepted_l) <= DARK_L
     if settle > 0:
+        why = "대기%d" % settle
         settle -= 1
     else:
-        factor = exposure_factor(
+        delta, why = exposure_factor(
             bool(clipping), bool(dark_face), bool(purple_dark), all_dark,
             not seen_l, exposure_us, hint,
         )
-        if factor is None:
+        if delta is None:
             expo_state = "유지"
         else:
-            step_exposure(factor)
+            step_exposure(delta)
+    # 같은 분기가 매 프레임 반복되지 않게, 분기가 바뀔 때만 남긴다.
+    # 실제로 시간이 바뀌는 줄은 step_exposure가 따로 남긴다.
+    if why != last_expo_why:
+        uq = max(seen_uq) if seen_uq else -1
+        lo = min(accepted_l) if accepted_l else -1
+        hi = max(accepted_l) if accepted_l else -1
+        pl = min(purple_l) if purple_l else -1
+        print("노출판단 %s %d us  uq%d  면%d-%d  보라%d" % (why, exposure_us, uq, lo, hi, pl))
+        last_expo_why = why
 
     # 색 집합이 바뀔 때만 터미널에 남긴다. 화면에는 프레임 속도와 노출을 그린다.
     if names:
