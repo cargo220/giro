@@ -15,7 +15,7 @@
 #    테두리는 그 각의 부채꼴만 다시 찾아 회전 꼭짓점으로 그린다.
 # 4. 보라 면 위에 절반 넘게 겹친 파랑만 버린다. 파란 면 위의 보라도 버린다.
 #    보라 상자가 빠져도 직전 자리를 다시 재고, 아니면 최대 여섯 프레임 남긴다.
-# 5. 첫 면으로 노출 창을 한 번 고른 뒤, 면 밝기만 보고 노출을 움직인다.
+# 5. 이름이 없어도, 생긴 뒤에도 창은 1000–30000 µs다. 잘린 면은 위끝을 잠그지 않는다.
 
 import sensor
 import time
@@ -63,6 +63,8 @@ CHROMA_MIN = 20
 # 이보다 어두운 면은 바닥이다. 이름은 밝기로 정하지 않고, 바닥만 거른다.
 # 22면 노출이 내려간 보라 면(L 20 근처)이 이름에서 빠졌다.
 MIN_FACE_L = 16
+# 이름 없는 덩어리의 반지름이 이보다 작으면 검은 천이라 노출을 올리지 않는다.
+MISS_CHROMA = 10.0
 # 이보다 짧은 변은 천의 잡음 덩어리다. 블럭 면은 더 길다.
 MIN_SIDE = 20
 # 외접 상자 대비 채운 비율. 바닥 잡음이 뭉친 상자는 속이 비어 있다.
@@ -76,35 +78,38 @@ TIGHT_C0 = 0.45
 TIGHT_C1 = 1.35
 TIGHT_C0_NEAR = 0.82
 TIGHT_C1_NEAR = 1.20
-# 파란 블럭은 밝을 때 -89°, 어두우면 -74°이고 반지름은 42보다 크다.
-# 보라 블럭은 -69°~-61°이고 반지름은 그 아래다.
-# -76° 이하는 파랑이다. -68° 이상은 보리다.
-# 그 사이는 반지름이 42 이상일 때만 파랑이다. 보라의 어두운 면이 여기 걸린다.
-# 화면 끝에서 5°를 되돌리면 보라가 -75°까지 내려온다. -75°를 파랑으로 두면 그 자리가 파랑이 된다.
-BLUE_MAX_ANGLE = -76.0
+# 파란 블럭은 밝을 때 -89°다. 어두우면 -78°와 -74°를 오가고 반지름은 36–41이다.
+# 보라 블럭은 -69°~-61°다. 같은 장면의 보라는 -58°~-51°였다.
+# -73° 이하는 파랑이다. -74°가 -76° 벽에 걸려 반지름 41로 보라가 됐다.
+# -68° 이상은 보리다. 그 사이는 반지름이 42 이상일 때만 파랑이다.
+# 화면 끝의 5° 되돌림은 -70° 근처 보라를 -75°로 내려 이 벽 안에서 파랑으로 만든다.
+BLUE_MAX_ANGLE = -73.0
 PURPLE_MIN_ANGLE = -68.0
 BLUE_MIN_CHROMA = 42.0
 # 면의 L 상위 사분위가 여기 이상이면 하이라이트가 잘리고 각도가 돌아간다.
-CLIP_L = 92
-# 이름으로 받은 면이 전부 이보다 어두우면 노출을 늘린다.
-DARK_L = 28
-# 보라 면이 이보다 어두우면, 다른 면이 잘리지 않은 한 노출을 올린다.
-# 노란 면이 같이 밝아도 보라는 L 20 근처에서 이름이 빠졌다.
-PURPLE_L_AIM = 36
-# 창의 폭은 5000 µs. 7500에서 본 첫 면으로 둘 중 하나를 고르고 다시 옮기지 않는다.
-# 잘림만 있으면 조명이 밝아 낮은 창. 그 밖은 높은 창.
-# 10000 µs를 넘기면 바닥 잡음이 파란 블럭이 되었다.
-EXPO_LOW_MIN = 2500
-EXPO_LOW_MAX = 7500
-EXPO_HIGH_MIN = 5000
-EXPO_HIGH_MAX = 10000
-EXPO_MIN = EXPO_HIGH_MIN
-EXPO_MAX = EXPO_HIGH_MAX
-# 켜질 때의 노출. 낮은 창의 상한이자 높은 창의 한가운데다.
+# L은 100에서 끝난다. 101.2는 닿지 않아 잘림이 실행되지 않았다.
+CLIP_L = 95
+# 이름 없는 어두운 덩어리가 없을 때, 가장 밝은 면의 L이 여기 이상이면 0.9배다.
+# 그 덩어리가 남아 있으면 밝은 면이 이 값이어도 내리지 않는다.
+BRIGHT_L = 92
+# 1000 µs 아래와 30000 µs 위를 막는다.
+# 이름이 붙은 뒤에도 위끝은 30000 µs다. 잘린 면은 그 노출로 위끝을 잠그지 않는다.
+# 잘린 덩어리만 있으면 줄인다. 덩어리가 없으면 노출을 바꾸지 않는다.
+# 긴 저채도 파랑이나 이름 없는 덩어리가 있으면 올린다.
+EXPO_ABS_MIN = 1000
+EXPO_ABS_MAX = 30000
+# 탐색 중에도, 이름이 붙은 뒤에도 위는 30000 µs다.
+# 아래끝은 1000 µs다.
+EXPO_MIN = EXPO_ABS_MIN
+EXPO_MAX = EXPO_ABS_MAX
+# 프레임 가로 320의 절반. 이보다 긴 저채도 파랑은 블럭이 아니라 바닥으로 본다.
+FLOOR_BLUE_SIDE = 160
+# 켜질 때의 노출. 탐색은 여기서 위아래로 간다.
 EXPO_START = 7500
-# 한 번에 움직이는 노출 시간. 배율로 곱하지 않는다.
-EXPO_STEP = 150
-EXPO_UP = 300
+# 한 번에 움직이는 배율. 마이크로초를 더하지 않는다.
+# 상승은 1.2배, 감소는 0.9배다.
+EXPO_UP = 1.2
+EXPO_DOWN = 0.9
 # 켜질 때 장면 밝기로 게인을 고르지 않는다.
 # 어두운 블럭을 보고 잠긴 값이 23.8 dB였고, 그때 노출은 8000 µs에서 아래로 내려갔다.
 GAIN_DB = 24.0
@@ -124,6 +129,17 @@ RAD2DEG = 57.2957795
 # 6°를 넘기면 모서리의 흐린 보라(-69°, 반지름 35 이하)가 파랑이 된다.
 EDGE_RADIUS = 160.0
 EDGE_HUE_PULL = 5.0
+# 이 안은 지금의 상자, 지금의 반지름 20이다.
+# 밖은 초록·보라만 무채색 쪽으로 상자를 조금 열고, 반지름 하한을 거리로 내린다.
+# 가로 끝은 14다. 0까지 열면 끝의 검은 천이 면이 된다. 각 기준은 움직이지 않는다.
+EDGE_NEAR = 80.0
+EDGE_CHROMA_FAR = 14.0
+# 본 검색의 초록 (18,100,-100,-12,8,100), 보라 (10,100,4,90,-95,-8)보다
+# A, B만 회색 쪽으로 연 값이다. 보라의 L 아래끝만 4로 내려 어두운 사각형을 재게 한다.
+EDGE_GREEN_GATE = (18, 100, -100, -6, 4, 100)
+EDGE_PURPLE_GATE = (4, 100, 2, 90, -95, -4)
+# 두 번째 보라 검색. 본 상자의 L 10보다 어둡다. 이름은 여전히 L 16, 반지름 20이다.
+PURPLE_SEEK = (4, 100, 4, 90, -95, -8)
 
 # 새 프레임 비중. 높을수록 블럭을 빨리 따라가고, 나머지는 한 프레임 떨림을 누른다.
 FOLLOW = 0.8
@@ -204,6 +220,22 @@ def draw_face(img, name, label, quad, cx, cy):
     img.draw_edges(quad, color=DRAW[name], thickness=2)
 
 
+# H7은 글자 위치를 x, y로 나눠 받는다. 연습 보드 5.0은 (x, y)라서
+# 그 형식을 거절하면 이번 실행은 묶음으로 고정한다.
+_text_split = True
+
+
+def draw_text(img, x, y, text):
+    global _text_split
+    if _text_split:
+        try:
+            img.draw_string(x, y, text, color=(255, 255, 255), scale=2)
+            return
+        except TypeError:
+            _text_split = False
+    img.draw_string((x, y), text, color=(255, 255, 255), scale=2)
+
+
 def blob_value(blob, name):
     # 펌웨어에 따라 blob 값이 속성일 수도, 메서드일 수도 있다. 둘 다 읽는다.
     value = getattr(blob, name)
@@ -212,41 +244,74 @@ def blob_value(blob, name):
     return value
 
 
-def classify_angle(a, b, l_med, purple_soft=False):
+def center_radius(cx, cy):
+    # 광학 중심에서의 거리. 세기 조건만 이 거리로 바뀐다.
+    dx = cx - OPT_X
+    dy = cy - OPT_Y
+    return sqrt(dx * dx + dy * dy)
+
+
+def chroma_floor(cx, cy, purple_soft):
+    # 80픽셀 안은 지금의 하한이다. 가로 끝의 초록·보라만 14까지 내린다.
+    # 빨강·노랑·파랑은 이 함수를 쓰지 않는다.
+    base = 16.0 if purple_soft else CHROMA_MIN
+    if cx is None or cy is None:
+        return base
+    radius = center_radius(cx, cy)
+    if radius <= EDGE_NEAR:
+        return base
+    t = (radius - EDGE_NEAR) / (EDGE_RADIUS - EDGE_NEAR)
+    if t > 1.0:
+        t = 1.0
+    return base + (EDGE_CHROMA_FAR - base) * t
+
+
+def classify_angle(a, b, l_med, purple_soft=False, cx=None, cy=None):
     # 면의 색 이름을 정한다. 상자에 들어간 것만으로는 이름이 아니다.
     # purple_soft는 이미 그린 보라의 직전 자리를 다시 잴 때만 쓴다.
     # 새 덩어리에 쓰면 천의 옅은 보라 잡음이 사각형이 된다.
     # 바닥은 반지름이 작거나 L이 낮다. 밝기가 달라져도 이름은 각도로 정한다.
+    # 각 기준은 거리와 상관없이 같다. 초록·보라의 반지름 하한만 끝으로 갈수록 내려간다.
     min_l = 12 if purple_soft else MIN_FACE_L
-    min_c = 16 if purple_soft else CHROMA_MIN
     if l_med < min_l:
         return None
-    if a * a + b * b < min_c * min_c:
+    chroma2 = a * a + b * b
+    if chroma2 < EDGE_CHROMA_FAR * EDGE_CHROMA_FAR:
         return None
     angle = hue_deg(a, b)
-    chroma = sqrt(a * a + b * b)
+    chroma = sqrt(chroma2)
     # 파랑과 보라는 둘 다 B가 음수다. 어두운 파랑의 각이 보라 쪽으로 다가온다.
+    named = None
     if b < -8 and -105.0 < angle < -15.0:
         if angle <= BLUE_MAX_ANGLE or (
             angle < PURPLE_MIN_ANGLE and chroma >= BLUE_MIN_CHROMA
         ):
-            return ("파랑", "BLUE", angle, circ_abs(angle + 96.0))
-        return ("보라", "PURPLE", angle, circ_abs(angle + 43.0))
-    best = None
-    best_d = None
-    for row in REFERENCES:
-        dist = circ_abs(angle - row[2])
-        if best_d is None or dist < best_d:
-            best_d = dist
-            best = row
-    if best_d is None or best_d > MAX_HUE_DEG:
+            named = ("파랑", "BLUE", angle, circ_abs(angle + 96.0))
+        else:
+            named = ("보라", "PURPLE", angle, circ_abs(angle + 43.0))
+    else:
+        best = None
+        best_d = None
+        for row in REFERENCES:
+            dist = circ_abs(angle - row[2])
+            if best_d is None or dist < best_d:
+                best_d = dist
+                best = row
+        if best is not None and best_d <= MAX_HUE_DEG:
+            # 위 비율에 못 미친 B 음수 각은 파랑이다. 노랑·초록 기준에 떨어지지 않게 한다.
+            if b < 0 and best[0] != "파랑" and best[0] != "보라":
+                if circ_abs(angle + 96.0) <= MAX_HUE_DEG:
+                    named = ("파랑", "BLUE", angle, circ_abs(angle + 96.0))
+            else:
+                named = (best[0], best[1], angle, best_d)
+    if named is None:
         return None
-    # 위 비율에 못 미친 B 음수 각은 파랑이다. 노랑·초록 기준에 떨어지지 않게 한다.
-    if b < 0 and best[0] != "파랑" and best[0] != "보라":
-        if circ_abs(angle + 96.0) <= MAX_HUE_DEG:
-            return ("파랑", "BLUE", angle, circ_abs(angle + 96.0))
+    need = 16.0 if purple_soft else CHROMA_MIN
+    if named[0] == "초록" or named[0] == "보라":
+        need = chroma_floor(cx, cy, purple_soft)
+    if chroma < need:
         return None
-    return best[0], best[1], angle, best_d
+    return named
 
 
 def edge_weight(cx, cy):
@@ -1110,7 +1175,36 @@ def hide_as_shadow(faces):
     return hide
 
 
-def push_face(img, faces, seen_l, seen_uq, rect, corners, cx, cy, purple_soft, purple_only):
+def note_dark_miss(dark_miss, rect, l_med, a_med, b_med):
+    # 가로세로가 20 이상이고 L이 16 미만이며 반지름이 10 이상이면 노출을 올릴 덩어리다.
+    # 색 이름은 보지 않는다. 반지름 10 미만은 검은 천이다.
+    if int(rect[2]) < MIN_SIDE or int(rect[3]) < MIN_SIDE:
+        return
+    if l_med >= MIN_FACE_L:
+        return
+    if a_med * a_med + b_med * b_med < MISS_CHROMA * MISS_CHROMA:
+        return
+    dark_miss.append(l_med)
+
+
+def remember_dark_blob(img, blob, faces, dark_miss):
+    # 본 상자의 L 아래끝보다 어두운 색을 노출용으로만 기록한다. 이름은 붙이지 않는다.
+    # 이미 이름이 있는 면 안의 중심은 같은 블럭이라 올리지 않는다.
+    rect = blob_value(blob, "rect")
+    cx = blob_value(blob, "cx")
+    cy = blob_value(blob, "cy")
+    if center_in_faces(faces, cx, cy, 0):
+        return
+    roi = face_roi(rect)
+    stats = img.get_statistics(roi=roi, l_bins=32, a_bins=64, b_bins=64)
+    a_raw = read_stat(stats, "a_median")
+    b_raw = read_stat(stats, "b_median")
+    l_med = read_stat(stats, "l_median")
+    a_med, b_med = correct_edge(a_raw, b_raw, cx, cy)
+    note_dark_miss(dark_miss, rect, l_med, a_med, b_med)
+
+
+def push_face(img, faces, seen_l, seen_uq, rect, corners, cx, cy, purple_soft, purple_only, dark_miss):
     # 한 면의 가운데를 재고, 가장자리 보정 뒤의 이름으로 후보에 넣는다.
     pad = 16 if purple_only else 0
     if overlaps_existing(faces, rect, cx, cy, pad):
@@ -1124,8 +1218,9 @@ def push_face(img, faces, seen_l, seen_uq, rect, corners, cx, cy, purple_soft, p
     a_med, b_med = correct_edge(a_raw, b_raw, cx, cy)
     seen_l.append(l_med)
     seen_uq.append(l_uq)
-    named = classify_angle(a_med, b_med, l_med, purple_soft=purple_soft)
+    named = classify_angle(a_med, b_med, l_med, purple_soft=purple_soft, cx=cx, cy=cy)
     if named is None:
+        note_dark_miss(dark_miss, rect, l_med, a_med, b_med)
         return
     name, label, angle, _dist = named
     if purple_only and name != "보라":
@@ -1189,7 +1284,7 @@ def sparse_blue_parts(img, rect):
     b_med = read_stat(stats, "b_median")
     l_med = read_stat(stats, "l_median")
     a_med, b_med = correct_edge(a_med, b_med, cx, cy)
-    named = classify_angle(a_med, b_med, l_med, purple_soft=False)
+    named = classify_angle(a_med, b_med, l_med, purple_soft=False, cx=cx, cy=cy)
     if named is None or named[0] != "파랑":
         return None
     return (piece,)
@@ -1357,7 +1452,7 @@ def tight_corners(img, rect, a_raw, b_raw, name):
     return corners, cx, cy, fitted
 
 
-def take_blob(img, blob, faces, seen_l, seen_uq, purple_only, split_prev, split_next):
+def take_blob(img, blob, faces, seen_l, seen_uq, purple_only, split_prev, split_next, dark_miss):
     # 밀도를 통과한 덩어리를 색 경계에서 나누고, 각 면을 이름 후보로 올린다.
     # 밀도가 낮아도 넓은 파랑 칸이 따로 있으면 그 면만 올린다.
     code = blob_value(blob, "code")
@@ -1383,6 +1478,7 @@ def take_blob(img, blob, faces, seen_l, seen_uq, purple_only, split_prev, split_
                 part[1] + part[3] // 2,
                 False,
                 False,
+                dark_miss,
             )
         return
     parts = split_rect(img, rect, split_prev, split_next, not purple_only)
@@ -1427,6 +1523,7 @@ def take_blob(img, blob, faces, seen_l, seen_uq, purple_only, split_prev, split_
             cy,
             False,
             purple_only,
+            dark_miss,
         )
 
 
@@ -1526,35 +1623,48 @@ def nearest_held(held, quad):
     return best
 
 
-def lock_window(face_clip, dark_face, purple_dark):
-    # 7500 µs에서 이름이 붙은 첫 면으로 창을 한 번 고른다.
-    # 잘림이고 어두운 면과 어두운 보라가 없으면 조명이 밝다.
+def floor_blue(name, chroma, rect):
+    # 긴 변이 프레임 가로의 절반 이상이고 채도가 42 미만인 파랑은 바닥 잡음이다.
+    # 그보다 작은 파랑은 어두운 블럭일 수 있어 여기서 빼지 않는다.
+    if name != "파랑" or chroma >= BLUE_MIN_CHROMA:
+        return False
+    w = int(rect[2])
+    h = int(rect[3])
+    longer = w if w > h else h
+    return longer >= FLOOR_BLUE_SIDE
+
+
+def lock_window():
+    # 이름이 처음 붙어도 창은 1000–30000 µs다.
+    # 잘린 면은 0.9배로 줄이되, 위끝을 그 노출로 잠그지 않는다.
     global EXPO_MIN, EXPO_MAX
-    if face_clip and not dark_face and not purple_dark:
-        EXPO_MIN = EXPO_LOW_MIN
-        EXPO_MAX = EXPO_LOW_MAX
-    else:
-        EXPO_MIN = EXPO_HIGH_MIN
-        EXPO_MAX = EXPO_HIGH_MAX
+    EXPO_MIN = EXPO_ABS_MIN
+    EXPO_MAX = EXPO_ABS_MAX
     print("노출창 %d-%d us" % (EXPO_MIN, EXPO_MAX))
 
 
-def step_exposure(delta):
-    # 노출 시간만 delta µs만큼 바꾼다. 게인과 화이트밸런스는 건드리지 않는다.
+def step_exposure(factor):
+    # 노출 시간에 배율을 곱한다. 게인과 화이트밸런스는 건드리지 않는다.
     # 게인을 그대로 두고 노출만 움직인다.
     # 게인을 올리면 빛과 읽기 잡음이 같이 커지고, 노출을 늘리면 광자가 더 쌓인다.
     global exposure_us, settle, expo_state
     prev = exposure_us
-    nxt = prev + delta
+    nxt = int(prev * factor)
+    if nxt == prev:
+        if factor > 1:
+            nxt = prev + 1
+        elif factor < 1 and prev > 1:
+            nxt = prev - 1
     note = ""
     if nxt < EXPO_MIN:
         nxt = EXPO_MIN
         note = " 하한맞춤"
-    elif nxt > EXPO_MAX:
+    elif EXPO_MAX is not None and nxt > EXPO_MAX:
         nxt = EXPO_MAX
         note = " 상한맞춤"
+    delta = nxt - prev
     if nxt == prev:
-        expo_state = "하한" if delta < 0 else "상한"
+        expo_state = "하한" if factor < 1 else "상한"
         print("노출 한계 %s %d us  %+d%s" % (expo_state, prev, delta, note))
         return
     exposure_us = nxt
@@ -1562,9 +1672,9 @@ def step_exposure(delta):
     settle = EXPO_SETTLE
     if exposure_us <= EXPO_MIN:
         expo_state = "하한"
-    elif exposure_us >= EXPO_MAX:
+    elif EXPO_MAX is not None and exposure_us >= EXPO_MAX:
         expo_state = "상한"
-    elif delta > 0:
+    elif factor > 1:
         expo_state = "증가"
     else:
         expo_state = "감소"
@@ -1600,6 +1710,8 @@ sensor.set_auto_exposure(False, exposure_us=exposure_us)
 sensor.skip_frames(time=300)
 
 thresholds = [row[2:] for row in GATES]
+# 빨강·초록·파랑·노랑 상자는 L 18부터라 16 미만은 안 잡힌다. 같은 A, B로 L 4부터 다시 찾는다.
+dark_gates = [(4, row[3], row[4], row[5], row[6], row[7]) for row in GATES]
 clock = time.clock()
 last_names = None
 held = []
@@ -1627,20 +1739,41 @@ while True:
     accepted_l = []
     accepted_uq = []
     purple_l = []
+    dark_miss = []
     seen_l = []
     seen_uq = []
     faces = []
     split_next = []
+    floor_n = 0
 
     # 각 덩어리를 색 경계에서 나누고, 면 가운데 각도로 이름을 붙인다.
     for blob in blobs:
-        take_blob(img, blob, faces, seen_l, seen_uq, False, split_prev, split_next)
+        take_blob(img, blob, faces, seen_l, seen_uq, False, split_prev, split_next, dark_miss)
 
     # x 보폭 4면 흐린 보라 면의 표본이 220 근처에서 들락거려 상자만 깜빡인다.
     # 같은 보폭으로 보라 상자만 픽셀 수를 낮춰 한 번 더 찾는다.
     # 이미 잡은 면과 겹치면 넣지 않아 파란 블럭을 보라로 복제하지 않는다.
-    for blob in find_gated(img, [GATES[3][2:]], 80, 120):
-        take_blob(img, blob, faces, seen_l, seen_uq, True, split_prev, split_next)
+    purple_blobs = find_gated(img, [PURPLE_SEEK], 80, 120)
+    for blob in purple_blobs:
+        take_blob(img, blob, faces, seen_l, seen_uq, True, split_prev, split_next, dark_miss)
+
+    # 중심 80픽셀 밖만 초록·보라 상자를 회색 쪽으로 조금 연다.
+    # 각 기준은 본 검색과 같다. 가운데 면은 여기서 다시 넣지 않는다.
+    edge_green = find_gated(img, [EDGE_GREEN_GATE], 220, 250)
+    for blob in edge_green:
+        if center_radius(blob_value(blob, "cx"), blob_value(blob, "cy")) <= EDGE_NEAR:
+            continue
+        take_blob(img, blob, faces, seen_l, seen_uq, False, split_prev, split_next, dark_miss)
+    edge_purple = find_gated(img, [EDGE_PURPLE_GATE], 80, 120)
+    for blob in edge_purple:
+        if center_radius(blob_value(blob, "cx"), blob_value(blob, "cy")) <= EDGE_NEAR:
+            continue
+        take_blob(img, blob, faces, seen_l, seen_uq, True, split_prev, split_next, dark_miss)
+
+    # 본 상자에 안 들어온 어두운 색만 노출용으로 기록한다. 테두리는 그리지 않는다.
+    dark_blobs = find_gated(img, dark_gates, 80, 120)
+    for blob in dark_blobs:
+        remember_dark_blob(img, blob, faces, dark_miss)
 
     # 이름을 화면에 그린다. 절반 넘게 겹친 파랑·보라만 같은 블럭의 그림자로 뺀다.
     # 아래에 쌓인 파란 블럭은 윗면의 보라 상자와 가장자리만 닿으므로 남긴다.
@@ -1660,8 +1793,12 @@ while True:
             continue
         if name == "파랑":
             blue_rects.append(_rect)
-        accepted_l.append(l_med)
-        accepted_uq.append(l_uq)
+        # 넓은 저채도 파랑은 바닥이다. 그리되 노출을 고르는 면에는 넣지 않는다.
+        if floor_blue(name, chroma, _rect):
+            floor_n += 1
+        else:
+            accepted_l.append(l_med)
+            accepted_uq.append(l_uq)
         next_held.append(quad)
         names.append(name)
         details.append((name, l_med, angle, chroma))
@@ -1687,13 +1824,12 @@ while True:
         l_med = read_stat(stats, "l_median")
         l_uq = read_stat(stats, "l_uq")
         a_med, b_med = correct_edge(a_med, b_med, cx, cy)
-        named = classify_angle(a_med, b_med, l_med, purple_soft=True)
+        named = classify_angle(a_med, b_med, l_med, purple_soft=True, cx=cx, cy=cy)
         if named is not None and named[0] == "보라":
             miss = 0
             chroma = sqrt(a_med * a_med + b_med * b_med)
             angle = named[2]
-            # 검출이 빠져도 이 면이 어두우면 노출을 줄이지 않는다.
-            # 노란 면만 보고 줄이면 보라가 더 자주 빠진다.
+            # 다시 잰 보라도 이름 있는 면의 L에 넣는다.
             accepted_l.append(l_med)
             accepted_uq.append(l_uq)
             purple_l.append(l_med)
@@ -1718,43 +1854,56 @@ while True:
     # 노출은 블럭 면만 본다. 천이 검다고 화면 평균에 맞추면
     # 노출이 길어지고, 바닥의 파란 잡음이 블럭으로 잡힌다.
     clipping = seen_uq and max(seen_uq) >= CLIP_L
-    purple_dark = purple_l and min(purple_l) < PURPLE_L_AIM
-    dark_face = accepted_l and min(accepted_l) <= DARK_L
-    face_clip = bool(accepted_uq) and max(accepted_uq) >= CLIP_L
+    # 가로세로 20, 반지름 10 이상, L 16 미만이라 이름이 없는 덩어리다. 색은 따지지 않는다.
+    dark_block = bool(dark_miss)
+    bright_face = bool(accepted_l) and max(accepted_l) >= BRIGHT_L
+    has_blob = bool(blobs) or bool(purple_blobs)
     if window_wait > 0:
-        # 7500 µs가 센서에 반영된 뒤의 면만 창을 고르는 데 쓴다.
+        # 7500 µs가 센서에 반영된 뒤의 면만 탐색과 창에 쓴다.
         why = "준비%d" % window_wait
         window_wait -= 1
+    elif settle > 0:
+        why = "대기%d" % settle
+        settle -= 1
     elif not window_ready and not accepted_l:
-        why = "창 대기"
-        expo_state = "유지"
-    else:
-        if not window_ready:
-            lock_window(face_clip, bool(dark_face), bool(purple_dark))
-            window_ready = True
-        if settle > 0:
-            why = "대기%d" % settle
-            settle -= 1
-        elif clipping and not dark_face and not purple_dark:
-            # 노란 면만 밝고 파랑·보라가 이미 어두우면 노출을 더 줄이지 않는다.
-            # 줄이면 파랑 각이 보라 쪽으로 붙고, 보라 면은 이름에서 빠진다.
-            why = "감소 잘림"
-            step_exposure(-EXPO_STEP)
-        elif purple_dark and not clipping:
-            # 보라만 어둡고 다른 면은 아직 안 잘렸으면 노출을 올린다.
-            why = "증가 보라"
+        # 이름이 없으면 창을 고정하지 않는다. 검은 천의 밝기는 쓰지 않는다.
+        # 잘린 덩어리는 줄인다. 덩어리가 없으면 노출을 바꾸지 않는다.
+        # 넓은 저채도 파랑이나, 이름은 없는 다른 덩어리가 있으면 올린다.
+        if clipping:
+            if exposure_us <= EXPO_ABS_MIN:
+                why = "탐색 하한"
+                expo_state = "하한"
+            else:
+                why = "탐색 잘림"
+                step_exposure(EXPO_DOWN)
+        elif floor_n:
+            why = "임시 탐색바닥"
             step_exposure(EXPO_UP)
-        elif accepted_l and max(accepted_l) <= DARK_L:
-            why = "증가 전부어두움"
-            step_exposure(EXPO_UP)
-        elif clipping and dark_face:
-            why = "유지 잘림+어두운면"
-            expo_state = "유지"
-        elif clipping and purple_dark:
-            why = "유지 잘림+보라"
+        elif not has_blob and not dark_block:
+            why = "탐색 유지"
             expo_state = "유지"
         else:
-            why = "유지 중간"
+            why = "임시 탐색유지"
+            step_exposure(EXPO_UP)
+    else:
+        if not window_ready:
+            lock_window()
+            window_ready = True
+        if clipping:
+            # 잘린 면이 있으면 0.9배로 줄인다.
+            why = "감소 잘림"
+            step_exposure(EXPO_DOWN)
+        elif dark_block:
+            # 이름이 없는 큰 덩어리의 L이 16 미만이면 올린다. 밝은 면이 있어도 내리지 않는다.
+            why = "증가 놓침"
+            step_exposure(EXPO_UP)
+        elif bright_face:
+            # 놓친 덩어리가 없고 가장 밝은 면이 92 이상이면 0.9배다.
+            why = "감소 밝음"
+            step_exposure(EXPO_DOWN)
+        else:
+            # 큰 덩어리는 전부 이름이 있고, 가장 밝은 면은 92 미만이다.
+            why = "유지"
             expo_state = "유지"
     # 같은 분기가 매 프레임 반복되지 않게, 분기가 바뀔 때만 남긴다.
     # 실제로 시간이 바뀌는 줄은 step_exposure가 따로 남긴다.
@@ -1763,7 +1912,8 @@ while True:
         lo = min(accepted_l) if accepted_l else -1
         hi = max(accepted_l) if accepted_l else -1
         pl = min(purple_l) if purple_l else -1
-        print("노출판단 %s %d us  uq%d  면%d-%d  보라%d" % (why, exposure_us, uq, lo, hi, pl))
+        miss_l = min(dark_miss) if dark_miss else -1
+        print("노출판단 %s %d us  uq%d  면%d-%d  보라%d 놓침%d" % (why, exposure_us, uq, lo, hi, pl, miss_l))
         last_expo_why = why
 
     # 색 집합이 바뀔 때만 터미널에 남긴다. 화면에는 프레임 속도와 노출을 그린다.
@@ -1779,10 +1929,5 @@ while True:
         print("없음")
         last_names = None
 
-    img.draw_string((2, 2), "%.0f fps" % clock.fps(), color=(255, 255, 255), scale=2)
-    img.draw_string(
-        (2, 20),
-        "E %d %s" % (exposure_us, EXPO_MARK[expo_state]),
-        color=(255, 255, 255),
-        scale=2,
-    )
+    draw_text(img, 2, 2, "%.0f fps" % clock.fps())
+    draw_text(img, 2, 20, "E %d %s" % (exposure_us, EXPO_MARK[expo_state]))
