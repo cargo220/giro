@@ -88,6 +88,9 @@ TIGHT_C1_NEAR = 1.20
 BLUE_MAX_ANGLE = -73.0
 PURPLE_MIN_ANGLE = -68.0
 BLUE_MIN_CHROMA = 42.0
+# 노랑과 초록은 각이 겹친다. 114°는 노랑 90°에 더 가까워 초록이 노랑이 됐다.
+# 같은 장면의 노랑 L은 93, 초록 L은 58이다. 75 이상이면 노랑이다.
+YELLOW_MIN_L = 75
 # 면의 L 상위 사분위가 여기 이상이면 하이라이트가 잘리고 각도가 돌아간다.
 # L은 100에서 끝난다. 101.2는 닿지 않아 잘림이 실행되지 않았다.
 CLIP_L = 95
@@ -218,7 +221,12 @@ PURPLE_MISS_MAX = 6  # 검출이 빠져도 면이 보라이면 이 프레임 수
 
 
 def draw_face(img, name, label, quad, cx, cy):
-    # 면의 테두리만 그린다. 십자와 영문 이름은 프레임에 남지 않는다.
+    # 면의 테두리만 그린다. 노랑만 중심 기준으로 키워 그린다. 측정 크기는 바꾸지 않는다.
+    if name == "노랑":
+        grown = []
+        for x, y in quad:
+            grown.append((int(cx + (x - cx) * 1.4), int(cy + (y - cy) * 1.4)))
+        quad = grown
     img.draw_edges(quad, color=DRAW[name], thickness=2)
 
 
@@ -304,6 +312,14 @@ def classify_angle(a, b, l_med, purple_soft=False, cx=None, cy=None):
             if b < 0 and best[0] != "파랑" and best[0] != "보라":
                 if circ_abs(angle + 96.0) <= MAX_HUE_DEG:
                     named = ("파랑", "BLUE", angle, circ_abs(angle + 96.0))
+            elif best[0] == "노랑" or best[0] == "초록":
+                # 각이 가운데로 겹쳐도 노랑 면이 더 밝다.
+                if l_med >= YELLOW_MIN_L and circ_abs(angle - 90.0) <= MAX_HUE_DEG:
+                    named = ("노랑", "YELLOW", angle, circ_abs(angle - 90.0))
+                elif circ_abs(angle - 142.0) <= MAX_HUE_DEG:
+                    named = ("초록", "GREEN", angle, circ_abs(angle - 142.0))
+                else:
+                    named = (best[0], best[1], angle, best_d)
             else:
                 named = (best[0], best[1], angle, best_d)
     if named is None:
@@ -1106,6 +1122,7 @@ _merge_cb_ok = True
 
 def find_gated(img, gates, pixels, area):
     # 같은 색의 조각만 합친다. 오래된 펌웨어에 merge_cb가 없으면 합친 뒤를 각도로 자른다.
+    # 측정은 화면 전체다.
     global _merge_cb_ok
     if _merge_cb_ok:
         try:
@@ -1130,6 +1147,108 @@ def find_gated(img, gates, pixels, area):
         x_stride=4,
         y_stride=2,
     )
+
+
+# 하얀 배경. L이 높고 A·B가 0 근처다. 블럭은 이 위에 없다.
+WHITE_GATE = (55, 100, -20, 20, -20, 20)
+
+
+def _axis_median_l(img, horizontal, origin, length, cross, cross_len):
+    # 띠의 한 줄에서 L 중앙값. 하얀 기준의 L 하한과 비교한다.
+    if horizontal:
+        roi = (origin, cross, length, cross_len)
+    else:
+        roi = (cross, origin, cross_len, length)
+    stats = img.get_statistics(roi=roi, l_bins=16, a_bins=8, b_bins=8)
+    value = getattr(stats, "l_median")
+    if callable(value):
+        return value()
+    return value
+
+
+def _white_run(img, along_x, start, stop, step, cross, cross_len):
+    # start에서 stop으로 가며 L이 55 이상인 마지막 위치를 반환한다.
+    # 경계 상자는 어두운 픽셀까지 포함하므로 밝은 줄만 하얀색으로 센다.
+    last = start
+    pos = start
+    while (step > 0 and pos < stop) or (step < 0 and pos > stop):
+        origin = pos if step > 0 else pos + step
+        if origin < 0:
+            origin = 0
+        l_med = _axis_median_l(img, along_x, origin, abs(step), cross, cross_len)
+        if l_med < WHITE_GATE[0]:
+            break
+        last = pos + step
+        pos += step
+    return last
+
+
+def measure_work_roi(img):
+    # 시작 때 한 번만 부른다. 화면 변에 붙은 하얀 띠만 배경으로 본다.
+    # 세로로 길면 밝은 가로 구간만 빼고, 가로로 길면 밝은 세로 구간만 뺀다.
+    # 경계 상자 전체를 빼지 않는다. 검은 쪽으로는 8픽셀만 더 들어간다.
+    width = img.width()
+    height = img.height()
+    blobs = img.find_blobs(
+        [WHITE_GATE],
+        pixels_threshold=200,
+        area_threshold=200,
+        merge=True,
+        margin=16,
+    )
+    x0 = 0
+    y0 = 0
+    x1 = width
+    y1 = height
+    pad = 8
+    found = False
+    if blobs:
+        for blob in blobs:
+            rect = blob_value(blob, "rect")
+            if blob_value(blob, "pixels") < 200:
+                continue
+            x, y, bw, bh = int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])
+            touch_left = x <= 2
+            touch_right = x + bw >= width - 2
+            touch_top = y <= 2
+            touch_bottom = y + bh >= height - 2
+            if not (touch_left or touch_right or touch_top or touch_bottom):
+                continue
+            tall = bh * 2 >= height
+            wide = bw * 2 >= width
+            if tall and (not wide or bw <= bh):
+                if touch_left:
+                    edge = _white_run(img, True, x, x + bw, 8, y, bh)
+                    if edge + pad > x0:
+                        x0 = edge + pad
+                if touch_right:
+                    edge = _white_run(img, True, x + bw, x, -8, y, bh)
+                    if edge - pad < x1:
+                        x1 = edge - pad
+                found = True
+            elif wide:
+                if touch_top:
+                    edge = _white_run(img, False, y, y + bh, 8, x, bw)
+                    if edge + pad > y0:
+                        y0 = edge + pad
+                if touch_bottom:
+                    edge = _white_run(img, False, y + bh, y, -8, x, bw)
+                    if edge - pad < y1:
+                        y1 = edge - pad
+                found = True
+    if x0 < 0:
+        x0 = 0
+    if y0 < 0:
+        y0 = 0
+    if x1 > width:
+        x1 = width
+    if y1 > height:
+        y1 = height
+    if not found or x1 - x0 < 40 or y1 - y0 < 40:
+        print("하얀 영역 없음. 전체 화면")
+        return (0, 0, width, height)
+    print("측정 영역 %d,%d %dx%d" % (x0, y0, x1 - x0, y1 - y0))
+    return (x0, y0, x1 - x0, y1 - y0)
 
 
 def center_in_faces(faces, cx, cy, pad):
@@ -1856,11 +1975,9 @@ while True:
     held = next_held
     split_prev = split_next
 
-    # 이번 프레임의 면 밝기로 다음 노출을 정한다. 화면 평균은 쓰지 않는다.
-    # 노출은 블럭 면만 본다. 천이 검다고 화면 평균에 맞추면
-    # 노출이 길어지고, 바닥의 파란 잡음이 블럭으로 잡힌다.
-    clipping = seen_uq and max(seen_uq) >= CLIP_L
-    # 가로세로 20, 반지름 10 이상, L 30 미만이라 이름이 없는 덩어리다. 색은 따지지 않는다.
+    # 노출은 노란 측정 틀 안에서 찾은 면만 본다. 틀 밖 하얀 배경은 넣지 않는다.
+    # 노란 블럭만을 뜻하지 않는다.
+    clipping = bool(accepted_uq) and max(accepted_uq) >= CLIP_L
     dark_block = bool(dark_miss)
     bright_face = bool(accepted_l) and max(accepted_l) >= BRIGHT_L
     has_blob = bool(blobs) or bool(purple_blobs)
@@ -1872,7 +1989,7 @@ while True:
         why = "대기%d" % settle
         settle -= 1
     elif not window_ready and not accepted_l:
-        # 이름이 없으면 창을 고정하지 않는다. 검은 천의 밝기는 쓰지 않는다.
+        # 틀 안에서 이름이 없으면 창을 고정하지 않는다.
         # 잘린 덩어리는 줄인다. 덩어리가 없으면 노출을 바꾸지 않는다.
         # 넓은 저채도 파랑이나, 이름은 없는 다른 덩어리가 있으면 올린다.
         if clipping:
@@ -1896,15 +2013,15 @@ while True:
             lock_window()
             window_ready = True
         if clipping:
-            # 잘린 면이 있으면 0.9배로 줄인다.
+            # 틀 안의 면이 잘리면 0.9배로 줄인다.
             why = "감소 잘림"
             step_exposure(EXPO_DOWN)
         elif dark_block:
-            # 이름이 없는 큰 덩어리의 L이 30 미만이면 올린다. 밝은 면이 있어도 내리지 않는다.
+            # 틀 안에서 이름이 없는 큰 덩어리의 L이 30 미만이면 올린다.
             why = "증가 놓침"
             step_exposure(EXPO_UP)
         elif bright_face:
-            # 놓친 덩어리가 없고 가장 밝은 면이 94 이상이면 0.9배다.
+            # 틀 안에서 가장 밝은 면이 94 이상이면 0.9배다.
             why = "감소 밝음"
             step_exposure(EXPO_DOWN)
         elif purple_read and not purple_lifted:
@@ -1913,8 +2030,6 @@ while True:
             why = "증가 보라"
             step_exposure(EXPO_UP)
         else:
-            # 큰 덩어리는 전부 이름이 있고, 가장 밝은 면은 94 미만이다.
-            # 보라를 한 번 올린 뒤에도 여기로 와 더 올리지 않는다.
             why = "유지"
             expo_state = "유지"
     if not purple_read:
@@ -1922,7 +2037,7 @@ while True:
     # 같은 분기가 매 프레임 반복되지 않게, 분기가 바뀔 때만 남긴다.
     # 실제로 시간이 바뀌는 줄은 step_exposure가 따로 남긴다.
     if why != last_expo_why:
-        uq = max(seen_uq) if seen_uq else -1
+        uq = max(accepted_uq) if accepted_uq else -1
         lo = min(accepted_l) if accepted_l else -1
         hi = max(accepted_l) if accepted_l else -1
         pl = min(purple_l) if purple_l else -1
