@@ -63,6 +63,8 @@ CHROMA_MIN = 20
 # 이보다 어두운 면은 바닥이다. 이름은 밝기로 정하지 않고, 바닥만 거른다.
 # 22면 노출이 내려간 보라 면(L 20 근처)이 이름에서 빠졌다.
 MIN_FACE_L = 16
+# 이름이 없는 덩어리의 L이 이 값 미만이면 노출을 1.2배로 올린다.
+MISS_L = 30
 # 이름 없는 덩어리의 반지름이 이보다 작으면 검은 천이라 노출을 올리지 않는다.
 MISS_CHROMA = 10.0
 # 이보다 짧은 변은 천의 잡음 덩어리다. 블럭 면은 더 길다.
@@ -91,7 +93,7 @@ BLUE_MIN_CHROMA = 42.0
 CLIP_L = 95
 # 이름 없는 어두운 덩어리가 없을 때, 가장 밝은 면의 L이 여기 이상이면 0.9배다.
 # 그 덩어리가 남아 있으면 밝은 면이 이 값이어도 내리지 않는다.
-BRIGHT_L = 92
+BRIGHT_L = 94
 # 1000 µs 아래와 30000 µs 위를 막는다.
 # 이름이 붙은 뒤에도 위끝은 30000 µs다. 잘린 면은 그 노출로 위끝을 잠그지 않는다.
 # 잘린 덩어리만 있으면 줄인다. 덩어리가 없으면 노출을 바꾸지 않는다.
@@ -1176,11 +1178,11 @@ def hide_as_shadow(faces):
 
 
 def note_dark_miss(dark_miss, rect, l_med, a_med, b_med):
-    # 가로세로가 20 이상이고 L이 16 미만이며 반지름이 10 이상이면 노출을 올릴 덩어리다.
+    # 가로세로가 20 이상이고 L이 30 미만이며 반지름이 10 이상이면 노출을 올릴 덩어리다.
     # 색 이름은 보지 않는다. 반지름 10 미만은 검은 천이다.
     if int(rect[2]) < MIN_SIDE or int(rect[3]) < MIN_SIDE:
         return
-    if l_med >= MIN_FACE_L:
+    if l_med >= MISS_L:
         return
     if a_med * a_med + b_med * b_med < MISS_CHROMA * MISS_CHROMA:
         return
@@ -1854,7 +1856,7 @@ while True:
     # 노출은 블럭 면만 본다. 천이 검다고 화면 평균에 맞추면
     # 노출이 길어지고, 바닥의 파란 잡음이 블럭으로 잡힌다.
     clipping = seen_uq and max(seen_uq) >= CLIP_L
-    # 가로세로 20, 반지름 10 이상, L 16 미만이라 이름이 없는 덩어리다. 색은 따지지 않는다.
+    # 가로세로 20, 반지름 10 이상, L 30 미만이라 이름이 없는 덩어리다. 색은 따지지 않는다.
     dark_block = bool(dark_miss)
     bright_face = bool(accepted_l) and max(accepted_l) >= BRIGHT_L
     has_blob = bool(blobs) or bool(purple_blobs)
@@ -1894,15 +1896,15 @@ while True:
             why = "감소 잘림"
             step_exposure(EXPO_DOWN)
         elif dark_block:
-            # 이름이 없는 큰 덩어리의 L이 16 미만이면 올린다. 밝은 면이 있어도 내리지 않는다.
+            # 이름이 없는 큰 덩어리의 L이 30 미만이면 올린다. 밝은 면이 있어도 내리지 않는다.
             why = "증가 놓침"
             step_exposure(EXPO_UP)
         elif bright_face:
-            # 놓친 덩어리가 없고 가장 밝은 면이 92 이상이면 0.9배다.
+            # 놓친 덩어리가 없고 가장 밝은 면이 94 이상이면 0.9배다.
             why = "감소 밝음"
             step_exposure(EXPO_DOWN)
         else:
-            # 큰 덩어리는 전부 이름이 있고, 가장 밝은 면은 92 미만이다.
+            # 큰 덩어리는 전부 이름이 있고, 가장 밝은 면은 94 미만이다.
             why = "유지"
             expo_state = "유지"
     # 같은 분기가 매 프레임 반복되지 않게, 분기가 바뀔 때만 남긴다.
