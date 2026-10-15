@@ -225,7 +225,7 @@ def draw_face(img, name, label, quad, cx, cy):
     if name == "노랑":
         grown = []
         for x, y in quad:
-            grown.append((int(cx + (x - cx) * 1.4), int(cy + (y - cy) * 1.4)))
+            grown.append((int(cx + (x - cx) * 1.2), int(cy + (y - cy) * 1.2)))
         quad = grown
     img.draw_edges(quad, color=DRAW[name], thickness=2)
 
