@@ -1724,6 +1724,7 @@ window_ready = False
 expo_state = "유지"
 last_expo_why = None
 purple_memory = None  # (rect, quad, cx, cy, miss)
+purple_lifted = False
 print("잠금 노출 %d us 게인 %.1f dB" % (exposure_us, gain_db))
 
 EXPO_MARK = {"유지": "=", "증가": "+", "감소": "-", "상한": "MAX", "하한": "MIN"}
@@ -1741,6 +1742,7 @@ while True:
     accepted_l = []
     accepted_uq = []
     purple_l = []
+    purple_read = False
     dark_miss = []
     seen_l = []
     seen_uq = []
@@ -1806,6 +1808,7 @@ while True:
         details.append((name, l_med, angle, chroma))
         draw_face(img, name, label, quad, cx, cy)
         if name == "보라":
+            purple_read = True
             purple_memory = (_rect, quad, cx, cy, 0)
             purple_l.append(l_med)
         i += 1
@@ -1828,6 +1831,7 @@ while True:
         a_med, b_med = correct_edge(a_med, b_med, cx, cy)
         named = classify_angle(a_med, b_med, l_med, purple_soft=True, cx=cx, cy=cy)
         if named is not None and named[0] == "보라":
+            purple_read = True
             miss = 0
             chroma = sqrt(a_med * a_med + b_med * b_med)
             angle = named[2]
@@ -1903,10 +1907,18 @@ while True:
             # 놓친 덩어리가 없고 가장 밝은 면이 94 이상이면 0.9배다.
             why = "감소 밝음"
             step_exposure(EXPO_DOWN)
+        elif purple_read and not purple_lifted:
+            # 유지에 들어갈 노출은 보라에 간당간당하다. 1.2배를 한 번만 더 올린다.
+            purple_lifted = True
+            why = "증가 보라"
+            step_exposure(EXPO_UP)
         else:
             # 큰 덩어리는 전부 이름이 있고, 가장 밝은 면은 94 미만이다.
+            # 보라를 한 번 올린 뒤에도 여기로 와 더 올리지 않는다.
             why = "유지"
             expo_state = "유지"
+    if not purple_read:
+        purple_lifted = False
     # 같은 분기가 매 프레임 반복되지 않게, 분기가 바뀔 때만 남긴다.
     # 실제로 시간이 바뀌는 줄은 step_exposure가 따로 남긴다.
     if why != last_expo_why:
