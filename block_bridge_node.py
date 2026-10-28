@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+# OpenMV를 USB로 직접 돌리고, 판별 결과와 화면을 ROS 2 토픽으로 옮긴다.
+# OpenMV는 rclpy를 돌릴 수 없어서 PC가 이 다리를 맡는다. 카메라는 USB 케이블 하나로 잇는다.
+# IDE가 카메라 포트를 잡고 있으면 연결하지 못하니 IDE 연결을 끊고 실행한다.
+#
+#   python3 block_bridge_node.py
+#   python3 block_bridge_node.py --ros-args -p port:=/dev/ttyACM0
+#   ros2 run rqt_image_view rqt_image_view /camera/image_raw
+#
+# 하는 일
+#   1. camera-ros.py를 보드에 올려 실행하고, 노출이 잠길 때까지 기다린다.
+#   2. print() 줄 가운데 "BLOCKS ..."만 /blocks로 낸다. 나머지 줄은 로그로 남긴다.
+#   3. IDE 화면에 가던 프레임(테두리와 이름이 그려진 것)을 /camera/image_raw로 낸다.
+# 발행
+#   /blocks            std_msgs/String     "RED@160,120 BLUE@80,90", 블럭이 없으면 ""
+#   /camera/image_raw  sensor_msgs/Image   rgb8, 보드에서 받는 대로
+
+import os
+import sys
+import time
+from pathlib import Path
+
+# see_cam이 불러오는 pygame의 인사 문구를 로그에 남기지 않는다.
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+
+import rclpy
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+from std_msgs.msg import String
+
+# see_cam이 openmv 1.0.7의 이벤트 처리를 고쳐 둔다. 같은 고침을 그대로 쓴다.
+import see_cam
+from openmv import Camera
+
+PREFIX = "BLOCKS"
+# 이 시간 동안 BLOCKS 줄이 없으면 카메라 스크립트가 멈춘 것으로 본다.
+SILENT_SEC = 2.0
+# 이전 스크립트를 멈추면 보드가 soft reboot 한다. 그 뒤에 올려야 새 스크립트가 남는다.
+REBOOT_WAIT = 4.0
+
+
+class BlockBridge(Node):
+    def __init__(self):
+        super().__init__("block_bridge")
+        port = self.declare_parameter("port", "auto").value
+        if port in ("", "auto"):
+            port = see_cam.default_port()
+        script = self.declare_parameter(
+            "script", str(Path(__file__).with_name("camera-ros.py"))).value
+        self.frame_id = self.declare_parameter("frame_id", "camera").value
+        self.blocks_pub = self.create_publisher(String, "blocks", 10)
+        self.image_pub = self.create_publisher(Image, "camera/image_raw", 1)
+        self.buf = ""
+        self.silent = False
+        # 첫 BLOCKS 줄 전에는 노출을 잠그는 중이라 침묵 경고를 내지 않는다.
+        self.last_line = None
+
+        self.cam = Camera(port)
+        self.cam.connect()
+        self.cam.stop()
+        deadline = time.time() + REBOOT_WAIT
+        while time.time() < deadline:
+            self.cam.read_stdout()
+            time.sleep(0.05)
+        self.cam.exec(Path(script).read_text(encoding="utf-8"))
+        self.cam.streaming(True)
+        self.get_logger().info("카메라 %s에서 %s 실행" % (port, Path(script).name))
+        self.create_timer(0.02, self.poll)
+
+    def poll(self):
+        text = self.cam.read_stdout()
+        if text:
+            self.buf += text
+            # 줄 가운데서 끊긴 마지막 조각은 다음 읽기까지 남긴다.
+            *lines, self.buf = self.buf.split("\n")
+            for line in lines:
+                self.on_line(line.strip())
+        frame = self.cam.read_frame()
+        if frame is not None:
+            self.publish_frame(frame)
+        if self.last_line is None:
+            return
+        if time.time() - self.last_line > SILENT_SEC and not self.silent:
+            self.silent = True
+            self.get_logger().warn("BLOCKS 줄이 %.0f초째 없다" % SILENT_SEC)
+
+    def on_line(self, line):
+        if not line:
+            return
+        if not line.startswith(PREFIX):
+            # 노출 판단, 색 측정값, 오류는 보드가 찍은 그대로 로그에 남긴다.
+            if "Traceback" in line or "Error" in line:
+                self.get_logger().error("카메라: %s" % line)
+            elif line.startswith("노출판단"):
+                # 매 프레임 찍히는 줄이라 평소에는 숨긴다. --log-level debug로 본다.
+                self.get_logger().debug("카메라: %s" % line)
+            else:
+                self.get_logger().info("카메라: %s" % line)
+            return
+        self.last_line = time.time()
+        if self.silent:
+            self.silent = False
+            self.get_logger().info("BLOCKS 줄 다시 받음")
+        self.blocks_pub.publish(String(data=line[len(PREFIX):].strip()))
+
+    def publish_frame(self, frame):
+        msg = Image()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.frame_id
+        msg.width = frame["width"]
+        msg.height = frame["height"]
+        msg.encoding = "rgb8"
+        msg.step = frame["width"] * 3
+        msg.data = bytes(frame["data"])
+        self.image_pub.publish(msg)
+
+    def close(self):
+        # 보드에 스크립트를 남겨 두지 않는다. 다음에 IDE로 바로 붙을 수 있게 멈추고 끊는다.
+        try:
+            self.cam.streaming(False)
+            self.cam.stop()
+        finally:
+            self.cam.disconnect()
+
+
+def main():
+    rclpy.init()
+    try:
+        node = BlockBridge()
+    except Exception as exc:
+        print("카메라를 열지 못했다: %s" % exc, file=sys.stderr)
+        rclpy.shutdown()
+        return 1
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    except Exception:
+        # Ctrl+C가 발행 콜백 도중에 오면 이미 닫힌 context로 발행하다 오류가 난다.
+        # 종료 중이면 정상 종료로 본다.
+        if rclpy.ok():
+            raise
+    finally:
+        node.close()
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

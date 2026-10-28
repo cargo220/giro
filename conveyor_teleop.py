@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+# 터미널에서 키를 눌러 컨베이어를 움직인다. conveyor_node.py에 토픽만 보낸다.
+# 키 입력을 받아야 하므로 터미널 창에서 직접 돌린다. launch에서는 새 창으로 띄운다.
+#
+#   스페이스   정지 / 마지막 속도로 다시 출발
+#   ↑ / w      속도 +STEP (정방향 쪽)
+#   ↓ / s      속도 -STEP (역방향 쪽)
+#   r          방향 반전
+#   0          정지하고 설정 속도를 0으로
+#   q / Ctrl+C 정지하고 끝낸다
+#
+# 발행  /conveyor/speed std_msgs/Int32, /conveyor/stop std_msgs/Empty
+# 구독  /conveyor/state std_msgs/Int32  보드가 받아들인 속도를 화면에 보인다
+
+import os
+import select
+import sys
+import termios
+import tty
+
+import rclpy
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+from std_msgs.msg import Empty, Int32
+
+from conveyor import SPEED_LIMIT
+
+STEP = 10
+HELP = "스페이스 정지/출발  ↑w 빠르게  ↓s 느리게  r 반전  0 리셋  q 끝"
+
+KEYS = {
+    " ": "toggle",
+    "w": "up", "\x1b[A": "up",
+    "s": "down", "\x1b[B": "down",
+    "r": "reverse",
+    "0": "zero",
+    "q": "quit", "\x03": "quit",
+}
+
+
+class Teleop(Node):
+    def __init__(self, default_speed):
+        super().__init__("conveyor_teleop")
+        self.target = int(self.declare_parameter("speed", default_speed).value)
+        self.running = False
+        self.state = None
+        self.speed_pub = self.create_publisher(Int32, "conveyor/speed", 10)
+        self.stop_pub = self.create_publisher(Empty, "conveyor/stop", 10)
+        self.create_subscription(Int32, "conveyor/state", self.on_state, 10)
+
+    def on_state(self, msg):
+        if msg.data != self.state:
+            self.state = msg.data
+            self.show()
+
+    def send(self):
+        if self.running and self.target != 0:
+            self.speed_pub.publish(Int32(data=self.target))
+        else:
+            self.stop_pub.publish(Empty())
+
+    def act(self, action):
+        if action == "toggle":
+            self.running = not self.running
+        elif action == "up":
+            self.target = min(SPEED_LIMIT, self.target + STEP)
+        elif action == "down":
+            self.target = max(-SPEED_LIMIT, self.target - STEP)
+        elif action == "reverse":
+            self.target = -self.target
+        elif action == "zero":
+            self.target = 0
+            self.running = False
+        elif action == "quit":
+            self.running = False
+            self.send()
+            return False
+        # 서 있을 때 속도만 바꾸면 보드에는 보내지 않는다. 출발할 때 그 속도로 간다.
+        if self.running or action in ("toggle", "zero"):
+            self.send()
+        self.show()
+        return True
+
+    def show(self):
+        mode = "운전" if self.running else "정지"
+        board = "-" if self.state is None else str(self.state)
+        # 같은 줄을 덮어써서 상태 한 줄만 보인다.
+        sys.stdout.write("\r\033[K%s  설정 %+d  보드 %s" % (mode, self.target, board))
+        sys.stdout.flush()
+
+
+def read_key(timeout):
+    # sys.stdin.read는 남은 글자를 파이썬 버퍼로 미리 가져가 select가 못 본다.
+    # 그러면 화살표(ESC [ A)의 뒤 두 글자를 놓치므로 fd에서 바로 읽는다.
+    fd = sys.stdin.fileno()
+    ready, _, _ = select.select([fd], [], [], timeout)
+    if not ready:
+        return None
+    ch = os.read(fd, 1)
+    if ch == b"\x1b":
+        ready, _, _ = select.select([fd], [], [], 0.05)
+        if ready:
+            ch += os.read(fd, 2)
+    return ch.decode("utf-8", "replace")
+
+
+def main():
+    if not sys.stdin.isatty():
+        print("키 입력을 받을 터미널이 없다. 터미널 창에서 직접 실행한다.")
+        return 1
+    rclpy.init()
+    node = Teleop(40)
+    saved = termios.tcgetattr(sys.stdin)
+    print(HELP)
+    node.show()
+    try:
+        tty.setcbreak(sys.stdin.fileno())
+        while rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0)
+            key = read_key(0.05)
+            if key is None or key not in KEYS:
+                continue
+            if not node.act(KEYS[key]):
+                break
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, saved)
+        if rclpy.ok():
+            # 끝날 때 한 번 더 세운다. 발행이 나가도록 잠깐 돌린다.
+            node.stop_pub.publish(Empty())
+            rclpy.spin_once(node, timeout_sec=0.2)
+        print()
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
