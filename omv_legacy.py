@@ -90,6 +90,8 @@ class LegacyCamera:
                 self._command(SCRIPT_STOP, 0)
                 next_stop = time.time() + 0.5
             time.sleep(0.1)
+            # 스크립트는 매 프레임 print한다. 출력 버퍼가 차면 보드가 print에서 막혀 정지를 못 받으니 비운다.
+            self.read_stdout()
             if not self.script_running():
                 break
             if time.time() > deadline:

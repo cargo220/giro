@@ -7,12 +7,16 @@
 #   ↓ / s      속도 -STEP (역방향 쪽)
 #   r          방향 반전
 #   0          정지하고 설정 속도를 0으로
+#   a          자동 모드 켜기/끄기. 켜면 line_controller_node.py가 블럭을 중앙에 세운다
+#              자동 중에는 벨트를 직접 움직이는 키(스페이스·↑↓·r·0)를 받지 않는다
 #   h → y      벨트를 세우고 Mirobot 원점 복귀. 팔 전체가 움직여 y로 한 번 더 확인받는다
 #              h 다음에 y가 아닌 키를 누르면 취소하고, 그 키는 실행하지 않는다
 #   q / Ctrl+C 정지하고 끝낸다
 #
 # 발행  /conveyor/speed std_msgs/Int32, /conveyor/stop std_msgs/Empty, /conveyor/home std_msgs/Empty
+#       /line/auto std_msgs/Bool
 # 구독  /conveyor/state std_msgs/Int32  보드가 받아들인 속도를 화면에 보인다
+#       /line/state std_msgs/String   자동 라인 상태(feed, align, hold 2 등)를 화면에 보인다
 
 import os
 import select
@@ -23,12 +27,12 @@ import tty
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Empty, Int32
+from std_msgs.msg import Bool, Empty, Int32, String
 
 from conveyor import SPEED_LIMIT
 
 STEP = 10
-HELP = "스페이스 정지/출발  ↑w 빠르게  ↓s 느리게  r 반전  0 리셋  h 원점복귀  q 끝"
+HELP = "스페이스 정지/출발  ↑w 빠르게  ↓s 느리게  r 반전  0 리셋  a 자동  h 원점복귀  q 끝"
 
 KEYS = {
     " ": "toggle",
@@ -36,6 +40,7 @@ KEYS = {
     "s": "down", "\x1b[B": "down",
     "r": "reverse",
     "0": "zero",
+    "a": "auto",
     "h": "home",
     "y": "yes",
     "q": "quit", "\x03": "quit",
@@ -49,15 +54,29 @@ class Teleop(Node):
         self.running = False
         self.state = None
         self.asking_home = False
+        self.auto = False
+        self.line_state = None
         self.speed_pub = self.create_publisher(Int32, "conveyor/speed", 10)
         self.stop_pub = self.create_publisher(Empty, "conveyor/stop", 10)
         self.home_pub = self.create_publisher(Empty, "conveyor/home", 10)
+        self.auto_pub = self.create_publisher(Bool, "line/auto", 10)
         self.create_subscription(Int32, "conveyor/state", self.on_state, 10)
+        self.create_subscription(String, "line/state", self.on_line_state, 10)
 
     def on_state(self, msg):
         if msg.data != self.state:
             self.state = msg.data
             self.show()
+
+    def on_line_state(self, msg):
+        if msg.data != self.line_state:
+            self.line_state = msg.data
+            self.show()
+
+    def set_auto(self, on):
+        self.auto = on
+        self.running = False
+        self.auto_pub.publish(Bool(data=on))
 
     def send(self):
         if self.running and self.target != 0:
@@ -77,12 +96,23 @@ class Teleop(Node):
                 sys.stdout.write("\r\033[K원점 복귀 취소\n")
             self.show()
             return True
+        if action == "auto":
+            self.set_auto(not self.auto)
+            self.show()
+            return True
         if action == "home":
+            if self.auto:
+                # 원점 복귀 중에 자동 라인이 벨트를 돌리지 않게 먼저 끈다.
+                self.set_auto(False)
             self.asking_home = True
             sys.stdout.write("\r\033[K원점 복귀: 팔 전체가 움직인다. 주변이 비었으면 y, 아니면 아무 키\n")
             sys.stdout.flush()
             return True
         if action == "yes":
+            return True
+        if self.auto and action in ("toggle", "up", "down", "reverse", "zero"):
+            sys.stdout.write("\r\033[K자동 중에는 a로 끈 뒤 직접 움직인다\n")
+            self.show()
             return True
         if action == "toggle":
             self.running = not self.running
@@ -96,6 +126,8 @@ class Teleop(Node):
             self.target = 0
             self.running = False
         elif action == "quit":
+            if self.auto:
+                self.set_auto(False)
             self.running = False
             self.send()
             return False
@@ -106,7 +138,10 @@ class Teleop(Node):
         return True
 
     def show(self):
-        mode = "운전" if self.running else "정지"
+        if self.auto:
+            mode = "자동 %s" % (self.line_state or "-")
+        else:
+            mode = "운전" if self.running else "정지"
         board = "-" if self.state is None else str(self.state)
         # 같은 줄을 덮어써서 상태 한 줄만 보인다.
         sys.stdout.write("\r\033[K%s  설정 %+d  보드 %s" % (mode, self.target, board))

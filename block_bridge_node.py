@@ -20,6 +20,7 @@
 #   /camera/image_raw  sensor_msgs/Image   rgb8, 보드에서 받는 대로
 
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -62,7 +63,12 @@ def find_camera_port():
 
 def open_camera(port, protocol, logger):
     if protocol == "auto":
+        # 켜진 직후나 앞 스크립트를 정리하는 중에는 한동안 답이 없을 때가 있다. 5초까지 다시 묻는다.
+        deadline = time.time() + 5.0
         fw = read_fw_version(port)
+        while fw is None and time.time() < deadline:
+            time.sleep(0.5)
+            fw = read_fw_version(port)
         protocol = "legacy" if fw is not None and tuple(fw[:2]) <= LEGACY_MAX_FW else "new"
         logger.info("펌웨어 %s, %s 방식" % (".".join(map(str, fw)) if fw else "모름", protocol))
     cam = LegacyCamera(port) if protocol == "legacy" else Camera(port)
@@ -190,6 +196,8 @@ def main():
         if rclpy.ok():
             raise
     finally:
+        # 터미널 Ctrl+C는 노드에 한 번, launch를 거쳐 한 번 더 온다. 정리 중에는 받지 않는다.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         node.close()
         node.destroy_node()
         if rclpy.ok():

@@ -12,20 +12,26 @@
 #   /conveyor/speed  std_msgs/Int32  -100~100, 부호가 방향, 0이 정지
 #   /conveyor/stop   std_msgs/Empty  바로 정지
 #   /conveyor/home   std_msgs/Empty  벨트를 세우고 Mirobot 원점 복귀($H). 팔 전체가 움직인다. exbox만
+#   /conveyor/move   std_msgs/Float32 벨트를 mm만큼 한 번에 옮긴다. 돌던 벨트는 세운 뒤에 옮긴다. exbox만
 #   /blocks         std_msgs/String block_bridge_node.py가 내는 판별 결과, 없으면 ""
 #                    블럭이 새로 보이면 벨트를 pause_sec 초 세웠다가 원래 속도로 돌린다.
-#                    같은 블럭이 계속 보이는 동안은 다시 세우지 않는다. 0이면 세우지 않는다.
+#                    같은 블럭이 계속 보이는 동안은 다시 세우지 않는다. 기본 0은 세우지 않는다.
+#                    자동 정렬은 line_controller_node.py가 맡으니 함께 쓸 때는 0으로 둔다.
 # 발행
-#   /conveyor/state  std_msgs/Int32  보드가 받아들인 마지막 속도, 1초마다와 바뀔 때
+#   /conveyor/state     std_msgs/Int32   보드가 받아들인 마지막 속도, 1초마다와 바뀔 때
+#   /conveyor/position  std_msgs/Float32 D축 위치(mm), 0.1초마다. exbox만
+#   /conveyor/moving    std_msgs/Bool    벨트가 움직이는 중인지, 0.1초마다. exbox만
 #
 #   ros2 topic pub --once /conveyor/speed std_msgs/msg/Int32 "{data: 40}"
 #   ros2 topic pub --once /conveyor/stop std_msgs/msg/Empty "{}"
 
+import signal
 import serial
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Empty, Int32, String
+from rcl_interfaces.msg import ParameterDescriptor
+from std_msgs.msg import Bool, Empty, Float32, Int32, String
 
 from conveyor import SPEED_LIMIT, open_belt
 
@@ -36,7 +42,9 @@ class ConveyorNode(Node):
         mode = self.declare_parameter("mode", "exbox").value
         port = self.declare_parameter("port", "auto").value
         address = self.declare_parameter("address", 10).value
-        self.pause_sec = float(self.declare_parameter("pause_sec", 2.0).value)
+        # pause_sec:=2처럼 정수로 와도 받도록 형을 고정하지 않는다.
+        self.pause_sec = float(self.declare_parameter(
+            "pause_sec", 0.0, ParameterDescriptor(dynamic_typing=True)).value)
         self.belt = open_belt(mode, port, address)
         self.current = None
         self.seeing = False
@@ -46,6 +54,11 @@ class ConveyorNode(Node):
         self.create_subscription(Int32, "conveyor/speed", self.on_speed, 10)
         self.create_subscription(Empty, "conveyor/stop", self.on_stop, 10)
         self.create_subscription(Empty, "conveyor/home", self.on_home, 10)
+        self.create_subscription(Float32, "conveyor/move", self.on_move, 10)
+        self.position_pub = self.create_publisher(Float32, "conveyor/position", 10)
+        self.moving_pub = self.create_publisher(Bool, "conveyor/moving", 10)
+        if hasattr(self.belt, "position"):
+            self.create_timer(0.1, self.publish_motion)
         self.create_subscription(String, "blocks", self.on_blocks, 10)
         self.create_timer(1.0, self.publish_state)
         self.create_timer(0.05, self.check_resume)
@@ -96,6 +109,24 @@ class ConveyorNode(Node):
         else:
             self.get_logger().warn("이미 원점 복귀 중이다")
         self.publish_state()
+
+    def on_move(self, msg):
+        self.resume_at = None
+        if not hasattr(self.belt, "move"):
+            self.get_logger().warn("이 벨트 방식에는 거리 이동이 없다")
+            return
+        reply = self.belt.move(msg.data)
+        if reply == "ok":
+            self.current = 0
+            self.get_logger().info("벨트 %.1f mm 이동" % msg.data)
+        else:
+            self.get_logger().error("벨트 이동을 받지 않는다: Mirobot %s" % reply)
+        self.publish_state()
+
+    def publish_motion(self):
+        if self.belt.position is not None:
+            self.position_pub.publish(Float32(data=float(self.belt.position)))
+        self.moving_pub.publish(Bool(data=bool(self.belt.moving)))
 
     def on_blocks(self, msg):
         seeing = bool(msg.data.strip())
@@ -152,6 +183,8 @@ def main():
         if rclpy.ok():
             raise
     finally:
+        # 터미널 Ctrl+C는 노드에 한 번, launch를 거쳐 한 번 더 온다. 정리 중에는 받지 않는다.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         node.shutdown()
         node.destroy_node()
         if rclpy.ok():

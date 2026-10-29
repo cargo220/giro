@@ -34,6 +34,8 @@ EXBOX_MAX_FEED = 2400
 # 컨트롤러에 쌓인 이동이 0.5초를 넘지 않게 한다. 실제 속도가 명령보다 조금 느려서
 # 시간만 보고 보내면 이동이 쌓여 정지가 점점 늦어진다.
 EXBOX_CHUNK = 0.25
+# move()로 한 번에 옮길 때의 속도다. 정렬용이라 느리게 둔다(15 mm/s).
+EXBOX_MOVE_FEED = 900
 EXBOX_POLL = 0.05
 STATUS_RE = re.compile(r"<(\w+),Angle\(ABCDXYZ\):[^,]+,[^,]+,[^,]+,([-\d.]+),")
 
@@ -79,6 +81,7 @@ class ExboxConveyor:
         self._target = None
         self._direction = 0
         self._home_requested = False
+        self._move_request = None
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
@@ -111,6 +114,19 @@ class ExboxConveyor:
         self._home_requested = True
         return "ok"
 
+    def move(self, mm, feed=EXBOX_MOVE_FEED):
+        """벨트를 mm만큼 한 번에 옮긴다. 돌던 벨트는 세우고, 다 선 뒤에 보낸다."""
+        if self.state in ("Alarm", "Hold", "Home"):
+            return self.state.lower()
+        self.value = 0
+        self._move_request = (float(mm), int(feed))
+        return "ok"
+
+    @property
+    def moving(self):
+        # 보낸 이동이 아직 남았거나, 보낼 이동이 기다리는 중이다.
+        return self.state not in ("Idle", None) or self._move_request is not None
+
     def close(self):
         self.value = 0
         self._running = False
@@ -140,6 +156,14 @@ class ExboxConveyor:
                 self.serial.write(b"$H\r\n")
                 # 다음 상태 줄이 Home으로 오기 전까지 벨트 이동을 보내지 않는다.
                 self.state = "Home"
+            if self._move_request is not None and self.state == "Idle":
+                mm, feed = self._move_request
+                self._move_request = None
+                self._target = None
+                if abs(mm) >= 0.01:
+                    self.serial.write(b"M21 G91 G01 D%.2f F%d\r\n" % (mm, feed))
+                    # 다음 상태 줄이 Run으로 오기 전에 moving이 False로 보이지 않게 한다.
+                    self.state = "Run"
             self._step()
             time.sleep(EXBOX_POLL)
 

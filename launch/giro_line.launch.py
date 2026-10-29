@@ -10,6 +10,8 @@
 #   block_bridge_node.py  USB로 OpenMV에 camera-ros.py를 올려 /blocks·/camera/image_raw 발행
 #                         camera:=false면 띄우지 않는다. 그동안 OpenMV IDE는 연결을 끊어 둔다
 #   rqt_image_view        /camera/image_raw 화면. image_view:=false면 띄우지 않는다
+#   line_controller_node.py  블럭을 카메라 쪽으로 보내 측정 범위 중앙에 세운다. config/line.yaml을 읽는다
+#                         키보드 창에서 a로 켜고 끈다. auto:=true면 켜진 채로 시작한다
 #   conveyor_teleop.py    키보드 조작. ros2 launch는 자식에게 키 입력을 넘기지 않아 새 xterm 창으로 연다
 #                         keyboard:=false면 띄우지 않는다. giro_line.sh는 이 값으로 tmux 창에 따로 둔다
 # 키보드 창을 닫거나 q를 누르면 벨트가 서고, 그 창이 끝나면 라인 전체가 내려간다.
@@ -42,8 +44,10 @@ def generate_launch_description():
                               description="벨트 포트, auto면 /dev/serial/by-id의 CH340 컨트롤러"),
         DeclareLaunchArgument("address", default_value="10",
                               description="MS4220 RS485 주소"),
-        DeclareLaunchArgument("pause_sec", default_value="2.0",
-                              description="블럭을 보면 벨트를 세울 초, 0이면 세우지 않음"),
+        DeclareLaunchArgument("pause_sec", default_value="0.0",
+                              description="conveyor_node의 옛 정지 동작(초). 자동 정렬과 겹치니 0으로 둔다"),
+        DeclareLaunchArgument("auto", default_value="false",
+                              description="자동 라인을 켠 채로 시작할지"),
         DeclareLaunchArgument("camera", default_value="true",
                               description="카메라 중계 노드를 띄울지"),
         DeclareLaunchArgument("cam_port", default_value="auto",
@@ -75,6 +79,13 @@ def generate_launch_description():
         output="screen",
         condition=IfCondition(LaunchConfiguration("camera")),
     )
+    controller = ExecuteProcess(
+        name="line_controller",
+        cmd=script("line_controller_node.py",
+                   ("auto", LaunchConfiguration("auto")))
+        + ["--params-file", str(ROOT / "config" / "line.yaml")],
+        output="screen",
+    )
     image_view = ExecuteProcess(
         name="image_view",
         cmd=["ros2", "run", "rqt_image_view", "rqt_image_view", "/camera/image_raw"],
@@ -97,4 +108,4 @@ def generate_launch_description():
         on_exit=[EmitEvent(event=Shutdown(reason="키보드 창 종료"))],
     ))
 
-    return LaunchDescription(args + [conveyor, bridge, image_view, teleop, stop_with_teleop])
+    return LaunchDescription(args + [conveyor, bridge, controller, image_view, teleop, stop_with_teleop])

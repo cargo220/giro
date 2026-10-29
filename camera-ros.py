@@ -22,14 +22,11 @@
 # 그 노드가 print() 줄을 읽어 /blocks로, 프레임을 /camera/image_raw로 발행한다.
 # 화면은 IDE 대신 rqt_image_view로 본다. IDE에서 열어도 판별은 그대로 돈다.
 # 한 줄 형식: "BLOCKS RED@160,120 BLUE@80,90". 블럭이 없으면 "BLOCKS"이다.
-# 색 집합이 바뀌면 바로, 그렇지 않으면 SEND_EVERY_MS마다 같은 줄을 다시 낸다.
+# 매 프레임 한 줄씩 낸다. PC는 이 줄로 벨트 위 블럭 위치를 따라간다.
 
 import sensor
 import time
 from math import atan2, sqrt, cos, sin
-
-# 결과가 그대로여도 이 간격으로 다시 내 PC가 카메라가 살아 있는지 안다.
-SEND_EVERY_MS = 500
 
 # 블럭을 찾는 고정 영역 (x, y, w, h). 화면 320×240 안의 픽셀이다. 이 밖은 보지 않는다.
 # 화면 전체를 보면 빈 바닥이 보라로 잡히고, 그 면 때문에 노출이 계속 올랐다.
@@ -1773,8 +1770,6 @@ thresholds = [row[2:] for row in GATES]
 dark_gates = [(4, row[3], row[4], row[5], row[6], row[7]) for row in GATES]
 clock = time.clock()
 last_names = None
-last_sent = None
-last_sent_ms = time.ticks_ms()
 held = []
 split_prev = []
 settle = 0
@@ -2055,16 +2050,11 @@ while True:
         print("없음")
         last_names = None
 
-    # 같은 결과를 BLOCKS 줄로 낸다. 집합이 바뀌면 바로, 아니면 SEND_EVERY_MS마다 다시 낸다.
-    sent_key = tuple(sorted(f[0] for f in found))
-    now_ms = time.ticks_ms()
-    if sent_key != last_sent or time.ticks_diff(now_ms, last_sent_ms) >= SEND_EVERY_MS:
-        line = "BLOCKS"
-        for label, fx, fy in found:
-            line += " %s@%d,%d" % (label, fx, fy)
-        print(line)
-        last_sent = sent_key
-        last_sent_ms = now_ms
+    # 같은 결과를 매 프레임 BLOCKS 줄로 낸다. 벨트가 도는 동안 PC가 블럭 위치를 따라가야 한다.
+    line = "BLOCKS"
+    for label, fx, fy in found:
+        line += " %s@%d,%d" % (label, fx, fy)
+    print(line)
 
     draw_text(img, 2, 2, "%.0f fps" % clock.fps())
     draw_text(img, 2, 20, "E %d %s" % (exposure_us, EXPO_MARK[expo_state]))
