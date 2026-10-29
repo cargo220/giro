@@ -11,7 +11,8 @@
 # 구독
 #   /conveyor/speed  std_msgs/Int32  -100~100, 부호가 방향, 0이 정지
 #   /conveyor/stop   std_msgs/Empty  바로 정지
-#   /blocks          std_msgs/String block_bridge_node.py가 내는 판별 결과, 없으면 ""
+#   /conveyor/home   std_msgs/Empty  벨트를 세우고 Mirobot 원점 복귀($H). 팔 전체가 움직인다. exbox만
+#   /blocks         std_msgs/String block_bridge_node.py가 내는 판별 결과, 없으면 ""
 #                    블럭이 새로 보이면 벨트를 pause_sec 초 세웠다가 원래 속도로 돌린다.
 #                    같은 블럭이 계속 보이는 동안은 다시 세우지 않는다. 0이면 세우지 않는다.
 # 발행
@@ -44,6 +45,7 @@ class ConveyorNode(Node):
         self.state_pub = self.create_publisher(Int32, "conveyor/state", 10)
         self.create_subscription(Int32, "conveyor/speed", self.on_speed, 10)
         self.create_subscription(Empty, "conveyor/stop", self.on_stop, 10)
+        self.create_subscription(Empty, "conveyor/home", self.on_home, 10)
         self.create_subscription(String, "blocks", self.on_blocks, 10)
         self.create_timer(1.0, self.publish_state)
         self.create_timer(0.05, self.check_resume)
@@ -60,6 +62,8 @@ class ConveyorNode(Node):
         elif reply == "hold":
             # 일시 정지다. 풀면 남아 있던 동작이 이어서 돌 수 있어 사람이 직접 푼다.
             self.get_logger().error("Mirobot이 Hold(일시 정지)다. 팔 주변을 비우고 컨트롤러에서 해제한다")
+        elif reply == "home":
+            self.get_logger().warn("Mirobot이 원점 복귀 중이다. 끝난 뒤 다시 출발한다")
         elif reply:
             self.current = value
             self.get_logger().info("속도 %d 응답 %s" % (value, reply))
@@ -76,6 +80,22 @@ class ConveyorNode(Node):
     def on_stop(self, _msg):
         self.resume_at = None
         self.apply(0)
+
+    def on_home(self, _msg):
+        # 키보드 창이 한 번 더 확인받고 보낸다. 노드는 받은 대로 실행한다.
+        self.resume_at = None
+        if not hasattr(self.belt, "home"):
+            self.get_logger().warn("이 벨트 방식에는 원점 복귀가 없다")
+            return
+        reply = self.belt.home()
+        if reply == "ok":
+            self.current = 0
+            self.get_logger().info("원점 복귀 시작. 팔이 움직인다")
+        elif reply == "hold":
+            self.get_logger().error("Hold(일시 정지) 중에는 원점 복귀를 보내지 않는다. 컨트롤러에서 먼저 해제한다")
+        else:
+            self.get_logger().warn("이미 원점 복귀 중이다")
+        self.publish_state()
 
     def on_blocks(self, msg):
         seeing = bool(msg.data.strip())

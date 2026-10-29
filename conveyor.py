@@ -6,6 +6,7 @@
 #   PC는 컨트롤러 USB(CH340, 115200)에 붙는다. 벨트는 Mirobot의 D축이라 mm 단위로만 움직인다.
 #   그래서 짧은 상대 이동을 이어 보내 계속 돌리고, 보내기를 멈추면 0.5초 안에 선다.
 #   전원을 켠 뒤에는 Mirobot이 Alarm이라 이동을 받지 않는다. 원점 복귀($H)를 먼저 한다.
+#   원점 복귀는 home()으로 보낸다. 팔이 움직이니 키보드 창은 한 번 더 확인받는다.
 # ms4220 — MS4220 보드에 USB–RS485 변환기를 바로 잇는 경우.
 #   명령은 wlkatapython SDK와 같은 "@<주소>G6 F<속도>\r\n"이고, 38400 bps다.
 #
@@ -77,6 +78,7 @@ class ExboxConveyor:
         self._buf = b""
         self._target = None
         self._direction = 0
+        self._home_requested = False
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
@@ -89,14 +91,25 @@ class ExboxConveyor:
         self.value = max(-SPEED_LIMIT, min(SPEED_LIMIT, int(value)))
         if self.state is None:
             return ""
-        if self.state in ("Alarm", "Hold"):
-            # Alarm은 원점 복귀 전, Hold는 일시 정지다. 둘 다 이동을 받지 않는다.
-            # 풀면 팔이 움직일 수 있어 여기서 대신 풀지 않는다.
+        if self.state in ("Alarm", "Hold", "Home"):
+            # Alarm은 원점 복귀 전, Hold는 일시 정지, Home은 원점 복귀 중이다. 모두 이동을 받지 않는다.
+            # 풀면 팔이 움직일 수 있어 여기서 대신 풀지 않는다. 원점 복귀는 home()으로 따로 부른다.
             return self.state.lower()
         return "ok"
 
     def stop(self):
         return self.speed(0)
+
+    def home(self):
+        """Mirobot 원점 복귀($H)를 보낸다. 팔 전체가 움직이니 부르는 쪽에서 확인을 받는다."""
+        if self.state == "Hold":
+            # Hold 중에 보낸 $H는 쌓였다가 해제되는 순간 실행된다. 보내지 않는다.
+            return "hold"
+        if self.state == "Home":
+            return "home"
+        self.value = 0
+        self._home_requested = True
+        return "ok"
 
     def close(self):
         self.value = 0
@@ -121,12 +134,18 @@ class ExboxConveyor:
         while self._running:
             self.serial.write(b"?\r\n")
             self._read_lines()
+            if self._home_requested:
+                self._home_requested = False
+                self._target = None
+                self.serial.write(b"$H\r\n")
+                # 다음 상태 줄이 Home으로 오기 전까지 벨트 이동을 보내지 않는다.
+                self.state = "Home"
             self._step()
             time.sleep(EXBOX_POLL)
 
     def _step(self):
         value = self.value
-        if value == 0 or self.state in ("Alarm", "Hold") or self.position is None:
+        if value == 0 or self.state in ("Alarm", "Hold", "Home") or self.position is None:
             # 이미 보낸 이동은 0.5초 안에 끝난다. 다음 출발은 그 자리에서 다시 잰다.
             self._target = None
             return

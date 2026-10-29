@@ -7,9 +7,11 @@
 #   ↓ / s      속도 -STEP (역방향 쪽)
 #   r          방향 반전
 #   0          정지하고 설정 속도를 0으로
+#   h → y      벨트를 세우고 Mirobot 원점 복귀. 팔 전체가 움직여 y로 한 번 더 확인받는다
+#              h 다음에 y가 아닌 키를 누르면 취소하고, 그 키는 실행하지 않는다
 #   q / Ctrl+C 정지하고 끝낸다
 #
-# 발행  /conveyor/speed std_msgs/Int32, /conveyor/stop std_msgs/Empty
+# 발행  /conveyor/speed std_msgs/Int32, /conveyor/stop std_msgs/Empty, /conveyor/home std_msgs/Empty
 # 구독  /conveyor/state std_msgs/Int32  보드가 받아들인 속도를 화면에 보인다
 
 import os
@@ -26,7 +28,7 @@ from std_msgs.msg import Empty, Int32
 from conveyor import SPEED_LIMIT
 
 STEP = 10
-HELP = "스페이스 정지/출발  ↑w 빠르게  ↓s 느리게  r 반전  0 리셋  q 끝"
+HELP = "스페이스 정지/출발  ↑w 빠르게  ↓s 느리게  r 반전  0 리셋  h 원점복귀  q 끝"
 
 KEYS = {
     " ": "toggle",
@@ -34,6 +36,8 @@ KEYS = {
     "s": "down", "\x1b[B": "down",
     "r": "reverse",
     "0": "zero",
+    "h": "home",
+    "y": "yes",
     "q": "quit", "\x03": "quit",
 }
 
@@ -44,8 +48,10 @@ class Teleop(Node):
         self.target = int(self.declare_parameter("speed", default_speed).value)
         self.running = False
         self.state = None
+        self.asking_home = False
         self.speed_pub = self.create_publisher(Int32, "conveyor/speed", 10)
         self.stop_pub = self.create_publisher(Empty, "conveyor/stop", 10)
+        self.home_pub = self.create_publisher(Empty, "conveyor/home", 10)
         self.create_subscription(Int32, "conveyor/state", self.on_state, 10)
 
     def on_state(self, msg):
@@ -60,6 +66,24 @@ class Teleop(Node):
             self.stop_pub.publish(Empty())
 
     def act(self, action):
+        if self.asking_home:
+            # 확인을 묻는 중에는 y만 받는다. 다른 키는 취소로 보고 그 키도 실행하지 않는다.
+            self.asking_home = False
+            if action == "yes":
+                self.running = False
+                self.home_pub.publish(Empty())
+                sys.stdout.write("\r\033[K원점 복귀를 보냈다. 끝나면 스페이스로 출발한다\n")
+            else:
+                sys.stdout.write("\r\033[K원점 복귀 취소\n")
+            self.show()
+            return True
+        if action == "home":
+            self.asking_home = True
+            sys.stdout.write("\r\033[K원점 복귀: 팔 전체가 움직인다. 주변이 비었으면 y, 아니면 아무 키\n")
+            sys.stdout.flush()
+            return True
+        if action == "yes":
+            return True
         if action == "toggle":
             self.running = not self.running
         elif action == "up":
@@ -118,9 +142,15 @@ def main():
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0)
             key = read_key(0.05)
-            if key is None or key not in KEYS:
+            if key is None:
                 continue
-            if not node.act(KEYS[key]):
+            action = KEYS.get(key)
+            if action is None:
+                # 원점 복귀를 묻는 중이면 모르는 키도 취소로 받는다.
+                if not node.asking_home:
+                    continue
+                action = "cancel"
+            if not node.act(action):
                 break
     except (KeyboardInterrupt, ExternalShutdownException):
         pass

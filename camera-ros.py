@@ -115,6 +115,11 @@ CLIP_L = 95
 # 이름 없는 어두운 덩어리가 없을 때, 가장 밝은 면의 L이 여기 이상이면 0.9배다.
 # 그 덩어리가 남아 있으면 밝은 면이 이 값이어도 내리지 않는다.
 BRIGHT_L = 94
+# 탐색 영역(벨트 윗면)의 밝기도 노출 근거로 쓴다. 이름 있는 면만 보면, 너무 밝아
+# 연보라가 하얗게 날아갔을 때 볼 면이 없어 노출이 내려가지 않았다.
+BELT_MAX_L = 60     # 벨트 중앙 L이 이보다 밝으면 줄인다
+BELT_ROOM_L = 52    # 벨트 중앙 L이 이보다 어두울 때만 올린다. 올렸다 줄였다를 막는 여유다
+ROI_CLIP_P = 0.98   # 영역 밝기의 이 지점이 CLIP_L 이상이면 날아간 면이 있는 것이다
 # 1000 µs 아래와 30000 µs 위를 막는다.
 # 이름이 붙은 뒤에도 위끝은 30000 µs다. 잘린 면은 그 노출로 위끝을 잠그지 않는다.
 # 잘린 덩어리만 있으면 줄인다. 덩어리가 없으면 노출을 바꾸지 않는다.
@@ -1793,6 +1798,11 @@ while True:
     # 다른 색 상자는 맞닿아도 한 덩어리로 합치지 않는다.
     clock.tick()
     img = sensor.snapshot()
+    # 테두리를 그리기 전에 탐색 영역의 밝기와 색을 한 번 잰다. 노출과 색 기준점이 같이 쓴다.
+    roi_hist = img.get_histogram(roi=SEARCH_ROI, l_bins=32, a_bins=64, b_bins=64)
+    roi_stats = roi_hist.get_statistics()
+    belt_l = read_stat(roi_stats, "l_median")
+    roi_top = read_stat(roi_hist.get_percentile(ROI_CLIP_P), "l_value")
     blobs = find_gated(img, thresholds, 220, 250)
 
     names = []
@@ -1923,7 +1933,10 @@ while True:
 
     # 노출은 노란 측정 틀 안에서 찾은 면만 본다. 틀 밖 하얀 배경은 넣지 않는다.
     # 노란 블럭만을 뜻하지 않는다.
-    clipping = bool(accepted_uq) and max(accepted_uq) >= CLIP_L
+    # 이름 있는 면이 잘렸거나, 이름이 없어도 영역 안에 날아간 것이 있으면 잘림이다.
+    clipping = (bool(accepted_uq) and max(accepted_uq) >= CLIP_L) or roi_top >= CLIP_L
+    belt_bright = belt_l > BELT_MAX_L
+    can_raise = belt_l < BELT_ROOM_L
     dark_block = bool(dark_miss)
     bright_face = bool(accepted_l) and max(accepted_l) >= BRIGHT_L
     has_blob = bool(blobs) or bool(purple_blobs)
@@ -1938,13 +1951,17 @@ while True:
         # 틀 안에서 이름이 없으면 창을 고정하지 않는다.
         # 잘린 덩어리는 줄인다. 덩어리가 없으면 노출을 바꾸지 않는다.
         # 넓은 저채도 파랑이나, 이름은 없는 다른 덩어리가 있으면 올린다.
-        if clipping:
+        if clipping or belt_bright:
             if exposure_us <= EXPO_ABS_MIN:
                 why = "탐색 하한"
                 expo_state = "하한"
             else:
-                why = "탐색 잘림"
+                why = "탐색 잘림" if clipping else "탐색 벨트밝음"
                 step_exposure(EXPO_DOWN)
+        elif not can_raise:
+            # 벨트가 이미 밝은 편이면 이름 없는 덩어리 때문에 올리지 않는다.
+            why = "탐색 벨트유지"
+            expo_state = "유지"
         elif floor_n:
             why = "임시 탐색바닥"
             step_exposure(EXPO_UP)
@@ -1962,7 +1979,10 @@ while True:
             # 틀 안의 면이 잘리면 0.9배로 줄인다.
             why = "감소 잘림"
             step_exposure(EXPO_DOWN)
-        elif dark_block:
+        elif belt_bright:
+            why = "감소 벨트밝음"
+            step_exposure(EXPO_DOWN)
+        elif dark_block and can_raise:
             # 틀 안에서 이름이 없는 큰 덩어리의 L이 30 미만이면 올린다.
             why = "증가 놓침"
             step_exposure(EXPO_UP)
@@ -1970,7 +1990,7 @@ while True:
             # 틀 안에서 가장 밝은 면이 94 이상이면 0.9배다.
             why = "감소 밝음"
             step_exposure(EXPO_DOWN)
-        elif purple_read and not purple_lifted:
+        elif purple_read and not purple_lifted and can_raise:
             # 유지에 들어갈 노출은 보라에 간당간당하다. 1.2배를 한 번만 더 올린다.
             purple_lifted = True
             why = "증가 보라"
@@ -1988,7 +2008,8 @@ while True:
         hi = max(accepted_l) if accepted_l else -1
         pl = min(purple_l) if purple_l else -1
         miss_l = min(dark_miss) if dark_miss else -1
-        print("노출판단 %s %d us  uq%d  면%d-%d  보라%d 놓침%d" % (why, exposure_us, uq, lo, hi, pl, miss_l))
+        print("노출판단 %s %d us  uq%d  면%d-%d  보라%d 놓침%d  벨트%d 상위%d" % (
+            why, exposure_us, uq, lo, hi, pl, miss_l, belt_l, roi_top))
         last_expo_why = why
 
     # 영역의 A·B 중앙값으로 색 기준점을 옮긴다. 영역 대부분은 벨트라 중앙값이 벨트 색을 따른다.
@@ -2003,11 +2024,10 @@ while True:
         and window_wait == 0
         and settle == 0
     ):
-        stats = img.get_statistics(roi=SEARCH_ROI, l_bins=32, a_bins=64, b_bins=64)
-        belt_a = read_stat(stats, "a_median")
-        belt_b = read_stat(stats, "b_median")
+        belt_a = read_stat(roi_stats, "a_median")
+        belt_b = read_stat(roi_stats, "b_median")
         if (
-            read_stat(stats, "l_median") >= CAST_MIN_L
+            belt_l >= CAST_MIN_L
             and abs(belt_a) <= CAST_LIMIT
             and abs(belt_b) <= CAST_LIMIT
         ):
@@ -2048,9 +2068,10 @@ while True:
 
     draw_text(img, 2, 2, "%.0f fps" % clock.fps())
     draw_text(img, 2, 20, "E %d %s" % (exposure_us, EXPO_MARK[expo_state]))
-    # 면에서 빼고 있는 색 기준점. 음수 A는 초록 치우침이다.
+    # 면에서 빼고 있는 색 기준점과 벨트 밝기. 음수 A는 초록 치우침이다.
+    # L이 BELT_MAX_L을 넘으면 노출이 내려가고, BELT_ROOM_L 아래에서만 올라간다.
     # 왼쪽 위는 하얀 바깥이 비쳐 흰 글자가 안 보여, 탐색 영역 바로 아래 벨트 위에 쓴다.
-    draw_text(img, SEARCH_ROI[0], SEARCH_ROI[1] + SEARCH_ROI[3] + 4,
-              "C A%+d B%+d" % (int(cast_a), int(cast_b)))
+    draw_text(img, SEARCH_ROI[0] - 40, SEARCH_ROI[1] + SEARCH_ROI[3] + 4,
+              "A%+d B%+d L%d" % (int(cast_a), int(cast_b), belt_l))
     # 탐색 영역은 판별이 끝난 뒤에 그린다. 먼저 그리면 틀 픽셀이 측정에 섞인다.
     img.draw_rectangle(SEARCH_ROI, color=SEARCH_ROI_COLOR)
