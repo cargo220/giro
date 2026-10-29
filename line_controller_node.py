@@ -8,20 +8,22 @@
 #     다음 위치를 예측해 이어 붙인다.
 #   - 서로 cluster_gap_px 안에 있는 블럭은 한 덩어리다. 붙어서 온 블럭은 덩어리째 다룬다.
 #   - 카메라 쪽 끝에 가장 가까운 덩어리를 목표로 삼아 그 중심을 측정 범위 중앙에 세운다.
-#   - 세운 뒤에는 덩어리 안 블럭마다 ID·색·좌표를 낸다. 하나를 치워도 남은 블럭이 있으면
-#     그대로 서 있고, 중앙 구역이 다 비면 다음 블럭을 받으러 간다.
+#   - 세운 뒤에는 덩어리 안 블럭마다 ID·색·좌표를 낸다. 하나를 치워도 그 덩어리 블럭이 남아
+#     있으면 그대로 서 있고, 다 치워지면 다음 덩어리로 간다. 뒤 덩어리가 이미 측정 범위 안에
+#     들어와 있어도 세운 덩어리의 ID만 보고 판단하므로, 뒤 덩어리는 다시 정렬해 중앙에 세운다.
 #   - 벨트 끝 너머에는 아무것도 없다. 치우지 않은 블럭을 내보내지 않는다.
 #
 # 상태  manual → feed → align → hold → feed ...
 #   manual  아무것도 시키지 않는다. 키보드로 직접 움직인다
 #   feed    벨트를 카메라 쪽으로 돌린다. 덩어리가 중앙 approach_px 앞에 오면 세운다
 #   align   선 뒤 덩어리 중심과 중앙의 차이를 mm로 바꿔 한 번에 옮긴다. tolerance_px 안이면 hold
-#   hold    중앙 구역(hold_half_px)에 블럭이 남아 있는 동안 서 있는다
+#   hold    정렬한 덩어리의 블럭(ID)이 남아 있는 동안 서 있는다. 다 치워지면 다음 덩어리가
+#           이미 가까우면 align, 아니면 feed
 #
 # 구독  /blocks String, /conveyor/position Float32, /conveyor/moving Bool, /line/auto Bool
 # 발행  /conveyor/speed Int32, /conveyor/move Float32
 #       /line/state   String  "manual" "feed" "align" "hold 2" 같은 상태, 바뀔 때와 1초마다
-#       /line/targets String  hold 중 블럭 목록 JSON [{"id":3,"color":"RED","x":180,"y":130}], 바뀔 때와 1초마다
+#       /line/targets String  hold 중 세운 덩어리의 블럭 목록 JSON [{"id":3,"color":"RED","x":180,"y":130}], 바뀔 때와 1초마다
 
 import json
 import re
@@ -69,7 +71,6 @@ class LineController(Node):
         self.cluster_gap_px = float(p("cluster_gap_px", 45.0))
         self.match_px = float(p("match_px", 30.0))
         self.lost_sec = float(p("lost_sec", 1.0))
-        self.hold_half_px = float(p("hold_half_px", 60.0))
         self.clear_sec = float(p("clear_sec", 1.0))
         self.settle_sec = float(p("settle_sec", 0.4))
         # 공급 중 이 시간 동안 블럭이 하나도 안 보이면 벨트를 세운다. 못 본 블럭을 끝으로 밀어내지 않는다.
@@ -248,10 +249,12 @@ class LineController(Node):
             self.align_wait_since = None
         elif state == "hold":
             self.empty_since = None
-            self.hold_ids = set()
+            # 지금 세운 덩어리의 블럭만 기억한다. 뒤에서 범위 안에 들어온 블럭은 여기 넣지 않는다.
+            lead = self.lead_cluster()
+            self.hold_ids = {t.id for t, _x, _y in lead} if lead else set()
             self.last_targets = None
             self.last_target_key = None
-            # 들어오자마자 구역 안 블럭을 세어 "hold 0"이 잠깐 나가지 않게 한다. 그 안에서 report한다.
+            # 들어오자마자 블럭을 세어 "hold 0"이 잠깐 나가지 않게 한다. 그 안에서 report한다.
             self.step_hold(time.time())
             return
         self.report(force=True)
@@ -309,8 +312,7 @@ class LineController(Node):
         self.get_logger().info("정렬 %d: %.0f px → 벨트 %.1f mm" % (self.align_tries, rem, mm))
 
     def step_hold(self, now):
-        here = [t for t in self.tracks.values()
-                if abs(self.remaining(self.along(t.x, t.y))) <= self.hold_half_px]
+        here = [self.tracks[i] for i in self.hold_ids if i in self.tracks]
         ids = {t.id for t in here}
         for gone in self.hold_ids - ids:
             self.get_logger().info("블럭 #%d 치워짐" % gone)
@@ -326,12 +328,17 @@ class LineController(Node):
         if here:
             self.empty_since = None
             return
-        # 하나를 치워도 남은 게 있으면 위에서 돌아간다. 다 비고 clear_sec 지나면 다음으로.
+        # 하나를 치워도 남은 게 있으면 위에서 돌아간다. 다 치우고 clear_sec 지나면 다음 덩어리로.
         if self.empty_since is None:
             self.empty_since = now
         elif now - self.empty_since >= self.clear_sec:
-            self.get_logger().info("중앙이 비었다. 다음 블럭을 받는다")
-            self.enter("feed")
+            if self.lead_in_zone():
+                # 뒤 덩어리가 이미 범위 안 가까이 와 있다. 공급 없이 바로 중앙에 맞춘다.
+                self.get_logger().info("세운 덩어리를 다 치웠다. 범위 안 다음 덩어리를 맞춘다")
+                self.enter("align")
+            else:
+                self.get_logger().info("세운 덩어리를 다 치웠다. 다음 블럭을 받는다")
+                self.enter("feed")
 
     def report(self, force=False):
         now = time.time()
