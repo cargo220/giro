@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 # 컨베이어를 ROS 2 토픽으로 움직이는 노드다. 카메라는 OpenMV IDE에 그대로 둔다.
-# 벨트 쪽 통신은 conveyor.py의 Conveyor(RS485, MS4220)를 그대로 쓴다.
+# 벨트 쪽 통신은 conveyor.py를 그대로 쓴다. mode는 exbox(다기능 컨트롤러 D축, 기본)
+# 또는 ms4220(RS485 직결)이다. exbox는 노드가 떠 있는 동안에만 벨트가 돈다.
 # colcon 빌드 없이 ROS 2 Humble 환경을 불러온 셸에서 바로 실행한다.
 #
-#   python3 conveyor_node.py --ros-args -p port:=/dev/ttyUSB0 -p address:=10 -p pause_sec:=2.0
+#   python3 conveyor_node.py --ros-args -p pause_sec:=2.0
+#   python3 conveyor_node.py --ros-args -p mode:=ms4220 -p port:=/dev/ttyUSB0 -p address:=10
+# port를 주지 않으면(auto) /dev/serial/by-id에서 CH340 컨트롤러를 찾는다.
 #
 # 구독
 #   /conveyor/speed  std_msgs/Int32  -100~100, 부호가 방향, 0이 정지
@@ -23,16 +26,17 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Empty, Int32, String
 
-from conveyor import SPEED_LIMIT, Conveyor
+from conveyor import SPEED_LIMIT, open_belt
 
 
 class ConveyorNode(Node):
     def __init__(self):
         super().__init__("conveyor")
-        port = self.declare_parameter("port", "/dev/ttyUSB0").value
+        mode = self.declare_parameter("mode", "exbox").value
+        port = self.declare_parameter("port", "auto").value
         address = self.declare_parameter("address", 10).value
         self.pause_sec = float(self.declare_parameter("pause_sec", 2.0).value)
-        self.belt = Conveyor(port, address)
+        self.belt = open_belt(mode, port, address)
         self.current = None
         self.seeing = False
         self.resume_speed = None
@@ -45,12 +49,18 @@ class ConveyorNode(Node):
         self.create_timer(0.05, self.check_resume)
         # 노드가 뜰 때 벨트가 이전 속도로 돌고 있을 수 있어 먼저 세운다.
         self.apply(0)
-        self.get_logger().info("컨베이어 %s 주소 %d" % (port, address))
+        self.get_logger().info("컨베이어 %s %s" % (mode, self.belt.serial.port))
 
     def apply(self, value):
         value = max(-SPEED_LIMIT, min(SPEED_LIMIT, int(value)))
         reply = self.belt.speed(value)
-        if reply:
+        if reply == "alarm":
+            # 원점 복귀 전이라 벨트가 이동을 받지 않는다. 팔이 움직이니 사람이 직접 한다.
+            self.get_logger().error("Mirobot이 Alarm이다. 팔 주변을 비우고 원점 복귀($H)부터 한다")
+        elif reply == "hold":
+            # 일시 정지다. 풀면 남아 있던 동작이 이어서 돌 수 있어 사람이 직접 푼다.
+            self.get_logger().error("Mirobot이 Hold(일시 정지)다. 팔 주변을 비우고 컨트롤러에서 해제한다")
+        elif reply:
             self.current = value
             self.get_logger().info("속도 %d 응답 %s" % (value, reply))
         else:

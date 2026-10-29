@@ -1,10 +1,12 @@
 # 컨베이어 라인 한 세트를 띄운다. colcon 빌드 없이 파일 경로로 실행한다.
 #
 #   ros2 launch launch/giro_line.launch.py
-#   ros2 launch launch/giro_line.launch.py belt_port:=/dev/ttyUSB0 cam_port:=/dev/ttyACM0 speed:=40
+#   ros2 launch launch/giro_line.launch.py speed:=40 pause_sec:=1.5
+# 포트는 둘 다 auto로 /dev/serial/by-id에서 찾는다. 벨트는 CH340 컨트롤러, 카메라는 OpenMV다.
+# 시작 전: OpenMV IDE 연결을 끊고, Mirobot이 Alarm이면 팔 주변을 비운 뒤 원점 복귀를 해 둔다.
 #
 # 띄우는 것
-#   conveyor_node.py      벨트(MS4220, RS485). /conveyor/speed·/conveyor/stop·/blocks 구독
+#   conveyor_node.py      벨트(기본은 다기능 컨트롤러 D축). /conveyor/speed·/conveyor/stop·/blocks 구독
 #   block_bridge_node.py  USB로 OpenMV에 camera-ros.py를 올려 /blocks·/camera/image_raw 발행
 #                         camera:=false면 띄우지 않는다. 그동안 OpenMV IDE는 연결을 끊어 둔다
 #   rqt_image_view        /camera/image_raw 화면. image_view:=false면 띄우지 않는다
@@ -34,8 +36,10 @@ def script(name, *params):
 
 def generate_launch_description():
     args = [
-        DeclareLaunchArgument("belt_port", default_value="/dev/ttyUSB0",
-                              description="컨베이어 RS485 변환기 포트"),
+        DeclareLaunchArgument("belt_mode", default_value="exbox",
+                              description="exbox(다기능 컨트롤러 D축) 또는 ms4220(RS485 직결)"),
+        DeclareLaunchArgument("belt_port", default_value="auto",
+                              description="벨트 포트, auto면 /dev/serial/by-id의 CH340 컨트롤러"),
         DeclareLaunchArgument("address", default_value="10",
                               description="MS4220 RS485 주소"),
         DeclareLaunchArgument("pause_sec", default_value="2.0",
@@ -43,7 +47,7 @@ def generate_launch_description():
         DeclareLaunchArgument("camera", default_value="true",
                               description="카메라 중계 노드를 띄울지"),
         DeclareLaunchArgument("cam_port", default_value="auto",
-                              description="OpenMV USB 포트, auto면 /dev/serial/by-id의 MicroPython 보드"),
+                              description="OpenMV USB 포트, auto면 /dev/serial/by-id의 OpenMV 보드"),
         DeclareLaunchArgument("image_view", default_value="true",
                               description="rqt_image_view로 카메라 화면을 띄울지"),
         DeclareLaunchArgument("speed", default_value="40",
@@ -58,6 +62,7 @@ def generate_launch_description():
     conveyor = ExecuteProcess(
         name="conveyor",
         cmd=script("conveyor_node.py",
+                   ("mode", LaunchConfiguration("belt_mode")),
                    ("port", LaunchConfiguration("belt_port")),
                    ("address", LaunchConfiguration("address")),
                    ("pause_sec", LaunchConfiguration("pause_sec"))),
@@ -74,6 +79,8 @@ def generate_launch_description():
         name="image_view",
         cmd=["ros2", "run", "rqt_image_view", "rqt_image_view", "/camera/image_raw"],
         output="screen",
+        # Qt 창은 SIGINT에 잘 반응하지 않는다. 오래 기다리지 않고 1초 뒤 SIGTERM으로 닫는다.
+        sigterm_timeout="1",
         condition=IfCondition(LaunchConfiguration("image_view")),
     )
     teleop = ExecuteProcess(

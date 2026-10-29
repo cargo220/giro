@@ -31,6 +31,14 @@ from math import atan2, sqrt, cos, sin
 # 결과가 그대로여도 이 간격으로 다시 내 PC가 카메라가 살아 있는지 안다.
 SEND_EVERY_MS = 500
 
+# 블럭을 찾는 고정 영역 (x, y, w, h). 화면 320×240 안의 픽셀이다. 이 밖은 보지 않는다.
+# 화면 전체를 보면 빈 바닥이 보라로 잡히고, 그 면 때문에 노출이 계속 올랐다.
+# 화면에 회색 틀로 그려 두니, 블럭이 지나는 벨트 위 자리에 맞춰 숫자만 고친다.
+# 지금 값은 실습 셀 벨트의 윗면이다. 양쪽 검은 고정대와 아래쪽 어두운 틈은 뺐다.
+# 카메라나 벨트를 옮기면 다시 맞춘다.
+SEARCH_ROI = (118, 66, 142, 136)
+SEARCH_ROI_COLOR = (128, 128, 128)
+
 # 검출용 LAB 상자. 이름을 정하는 기준이 아니다.
 # L의 아래를 막아 둔다. 0부터 열면 긴 노출의 검은 바닥이 파란 잡음으로 상자에 들어온다.
 # 파랑은 B를 -20보다 푸르게 두어 바닥을 빼고, A 상한은 22까지 연다.
@@ -135,6 +143,18 @@ RGB_BASE_DB = (64.4, 60.2, 63.7)
 # 위 기본에서 초록만 이만큼 낮춘다. 장면이 옮긴 자동 비율에서 빼지 않는다.
 GREEN_GAIN_CUT = 0.2
 EXPO_SETTLE = 5
+
+# 색 치우침 보정. 이 카메라는 화면 전체가 초록으로 치우쳐, 무채색인 빈 벨트도 A가 음수다.
+# 처음에는 초록 채널 게인을 낮췄지만 H7 펌웨어 4.4.2에서는 명령만 받고 색이 그대로였다.
+# 30 dB까지 낮춰도 A가 변하지 않았다. 그래서 센서는 두고, 벨트의 A·B 중앙값을 기준점으로 재서
+# 면의 A·B에서 뺀 뒤 이름을 정한다(correct_edge). 검출용 LAB 상자는 화면 값 그대로 쓴다.
+CAST_AUTO = True
+CAST_EVERY = 5           # 이 프레임 수마다 한 번 잰다
+CAST_FOLLOW = 0.3        # 새로 잰 값을 이 비율만 따라간다. 한 번 흔들려도 이름이 튀지 않게
+CAST_LIMIT = 25          # A·B가 이 밖이면 벨트가 아닌 것을 잰 것으로 보고 버린다
+CAST_MIN_L = 15          # 영역이 이보다 어두우면 A·B가 흔들려 재지 않는다
+# 이름 있는 면이 영역의 이 비율 이하면 그대로 잰다. 중앙값이라 작은 블럭은 벨트 색을 못 끈다.
+CAST_MAX_FACE_FRAC = 0.3
 # QVGA 광학 중심. 색수차는 중심에서 멀수록 커진다.
 OPT_X = 160.0
 OPT_Y = 120.0
@@ -358,6 +378,9 @@ def correct_edge(a, b, cx, cy):
     # 가장자리에서 커진 색상각을 되돌린 A, B를 돌려준다. 채도 반지름은 유지한다.
     # 어느 색이든 같은 렌즈 보정이다. 각만 되돌리고 반지름은 유지한다.
     # 반지름을 키우면 흐린 보라가 파랑 기준을 넘는다.
+    # 그 전에 빈 벨트에서 잰 색 치우침(cast_a, cast_b)을 뺀다. 이름을 정하는 곳은 모두 여기를 지난다.
+    a -= cast_a
+    b -= cast_b
     w = edge_weight(cx, cy)
     if w <= 0.0:
         return a, b
@@ -1132,12 +1155,13 @@ _merge_cb_ok = True
 
 def find_gated(img, gates, pixels, area):
     # 같은 색의 조각만 합친다. 오래된 펌웨어에 merge_cb가 없으면 합친 뒤를 각도로 자른다.
-    # 측정은 화면 전체다.
+    # SEARCH_ROI 안에서만 찾는다. 본 검색, 보라, 가장자리, 어두운 덩어리 모두 같다.
     global _merge_cb_ok
     if _merge_cb_ok:
         try:
             return img.find_blobs(
                 gates,
+                roi=SEARCH_ROI,
                 pixels_threshold=pixels,
                 area_threshold=area,
                 merge=True,
@@ -1150,6 +1174,7 @@ def find_gated(img, gates, pixels, area):
             _merge_cb_ok = False
     return img.find_blobs(
         gates,
+        roi=SEARCH_ROI,
         pixels_threshold=pixels,
         area_threshold=area,
         merge=True,
@@ -1157,108 +1182,6 @@ def find_gated(img, gates, pixels, area):
         x_stride=4,
         y_stride=2,
     )
-
-
-# 하얀 배경. L이 높고 A·B가 0 근처다. 블럭은 이 위에 없다.
-WHITE_GATE = (55, 100, -20, 20, -20, 20)
-
-
-def _axis_median_l(img, horizontal, origin, length, cross, cross_len):
-    # 띠의 한 줄에서 L 중앙값. 하얀 기준의 L 하한과 비교한다.
-    if horizontal:
-        roi = (origin, cross, length, cross_len)
-    else:
-        roi = (cross, origin, cross_len, length)
-    stats = img.get_statistics(roi=roi, l_bins=16, a_bins=8, b_bins=8)
-    value = getattr(stats, "l_median")
-    if callable(value):
-        return value()
-    return value
-
-
-def _white_run(img, along_x, start, stop, step, cross, cross_len):
-    # start에서 stop으로 가며 L이 55 이상인 마지막 위치를 반환한다.
-    # 경계 상자는 어두운 픽셀까지 포함하므로 밝은 줄만 하얀색으로 센다.
-    last = start
-    pos = start
-    while (step > 0 and pos < stop) or (step < 0 and pos > stop):
-        origin = pos if step > 0 else pos + step
-        if origin < 0:
-            origin = 0
-        l_med = _axis_median_l(img, along_x, origin, abs(step), cross, cross_len)
-        if l_med < WHITE_GATE[0]:
-            break
-        last = pos + step
-        pos += step
-    return last
-
-
-def measure_work_roi(img):
-    # 시작 때 한 번만 부른다. 화면 변에 붙은 하얀 띠만 배경으로 본다.
-    # 세로로 길면 밝은 가로 구간만 빼고, 가로로 길면 밝은 세로 구간만 뺀다.
-    # 경계 상자 전체를 빼지 않는다. 검은 쪽으로는 8픽셀만 더 들어간다.
-    width = img.width()
-    height = img.height()
-    blobs = img.find_blobs(
-        [WHITE_GATE],
-        pixels_threshold=200,
-        area_threshold=200,
-        merge=True,
-        margin=16,
-    )
-    x0 = 0
-    y0 = 0
-    x1 = width
-    y1 = height
-    pad = 8
-    found = False
-    if blobs:
-        for blob in blobs:
-            rect = blob_value(blob, "rect")
-            if blob_value(blob, "pixels") < 200:
-                continue
-            x, y, bw, bh = int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])
-            touch_left = x <= 2
-            touch_right = x + bw >= width - 2
-            touch_top = y <= 2
-            touch_bottom = y + bh >= height - 2
-            if not (touch_left or touch_right or touch_top or touch_bottom):
-                continue
-            tall = bh * 2 >= height
-            wide = bw * 2 >= width
-            if tall and (not wide or bw <= bh):
-                if touch_left:
-                    edge = _white_run(img, True, x, x + bw, 8, y, bh)
-                    if edge + pad > x0:
-                        x0 = edge + pad
-                if touch_right:
-                    edge = _white_run(img, True, x + bw, x, -8, y, bh)
-                    if edge - pad < x1:
-                        x1 = edge - pad
-                found = True
-            elif wide:
-                if touch_top:
-                    edge = _white_run(img, False, y, y + bh, 8, x, bw)
-                    if edge + pad > y0:
-                        y0 = edge + pad
-                if touch_bottom:
-                    edge = _white_run(img, False, y + bh, y, -8, x, bw)
-                    if edge - pad < y1:
-                        y1 = edge - pad
-                found = True
-    if x0 < 0:
-        x0 = 0
-    if y0 < 0:
-        y0 = 0
-    if x1 > width:
-        x1 = width
-    if y1 > height:
-        y1 = height
-    if not found or x1 - x0 < 40 or y1 - y0 < 40:
-        print("하얀 영역 없음. 전체 화면")
-        return (0, 0, width, height)
-    print("측정 영역 %d,%d %dx%d" % (x0, y0, x1 - x0, y1 - y0))
-    return (x0, y0, x1 - x0, y1 - y0)
 
 
 def center_in_faces(faces, cx, cy, pad):
@@ -1856,6 +1779,11 @@ expo_state = "유지"
 last_expo_why = None
 purple_memory = None  # (rect, quad, cx, cy, miss)
 purple_lifted = False
+cast_wait = CAST_EVERY
+cast_a = 0.0  # 빈 벨트의 A·B. correct_edge가 면의 A·B에서 뺀다. 첫 측정 전에는 0이다.
+cast_b = 0.0
+cast_ready = False
+roi_area = SEARCH_ROI[2] * SEARCH_ROI[3]
 print("잠금 노출 %d us 게인 %.1f dB" % (exposure_us, gain_db))
 
 EXPO_MARK = {"유지": "=", "증가": "+", "감소": "-", "상한": "MAX", "하한": "MIN"}
@@ -1869,6 +1797,7 @@ while True:
 
     names = []
     found = []  # BLOCKS 줄로 낼 (화면 글자, cx, cy)
+    face_area = 0  # 이름 있는 면이 덮은 넓이. 초록 보정을 잴지 정한다.
     details = []
     next_held = []
     accepted_l = []
@@ -1938,6 +1867,7 @@ while True:
         next_held.append(quad)
         names.append(name)
         found.append((label, cx, cy))
+        face_area += _rect[2] * _rect[3]
         details.append((name, l_med, angle, chroma))
         draw_face(img, name, label, quad, cx, cy)
         if name == "보라":
@@ -1980,6 +1910,7 @@ while True:
         if miss <= PURPLE_MISS_MAX:
             names.append("보라")
             found.append(("PURPLE", cx, cy))
+            face_area += rect[2] * rect[3]
             details.append(("보라", l_med, angle, chroma))
             draw_face(img, "보라", "PURPLE", quad, cx, cy)
             next_held.append(quad)
@@ -2060,6 +1991,37 @@ while True:
         print("노출판단 %s %d us  uq%d  면%d-%d  보라%d 놓침%d" % (why, exposure_us, uq, lo, hi, pl, miss_l))
         last_expo_why = why
 
+    # 영역의 A·B 중앙값으로 색 기준점을 옮긴다. 영역 대부분은 벨트라 중앙값이 벨트 색을 따른다.
+    # 블럭이 영역을 CAST_MAX_FACE_FRAC 넘게 덮으면 재지 않는다. 면 테두리는 두 픽셀 선이라
+    # 중앙값을 움직이지 못한다. 노출을 바꾼 직후에는 재지 않는다.
+    # 이번 프레임의 이름은 이미 정해졌으니, 바뀐 기준점은 다음 프레임부터 쓰인다.
+    if cast_wait > 0:
+        cast_wait -= 1
+    elif (
+        CAST_AUTO
+        and face_area <= roi_area * CAST_MAX_FACE_FRAC
+        and window_wait == 0
+        and settle == 0
+    ):
+        stats = img.get_statistics(roi=SEARCH_ROI, l_bins=32, a_bins=64, b_bins=64)
+        belt_a = read_stat(stats, "a_median")
+        belt_b = read_stat(stats, "b_median")
+        if (
+            read_stat(stats, "l_median") >= CAST_MIN_L
+            and abs(belt_a) <= CAST_LIMIT
+            and abs(belt_b) <= CAST_LIMIT
+        ):
+            if cast_ready:
+                cast_a += (belt_a - cast_a) * CAST_FOLLOW
+                cast_b += (belt_b - cast_b) * CAST_FOLLOW
+            else:
+                # 첫 값은 바로 쓴다. 0에서 천천히 따라가면 시작 몇 초 동안 이름이 틀린다.
+                cast_a = belt_a
+                cast_b = belt_b
+                cast_ready = True
+                print("색 기준점 A%+d B%+d" % (belt_a, belt_b))
+        cast_wait = CAST_EVERY
+
     # 색 집합이 바뀔 때만 터미널에 남긴다. 화면에는 프레임 속도와 노출을 그린다.
     if names:
         key = tuple(sorted(names))
@@ -2086,3 +2048,9 @@ while True:
 
     draw_text(img, 2, 2, "%.0f fps" % clock.fps())
     draw_text(img, 2, 20, "E %d %s" % (exposure_us, EXPO_MARK[expo_state]))
+    # 면에서 빼고 있는 색 기준점. 음수 A는 초록 치우침이다.
+    # 왼쪽 위는 하얀 바깥이 비쳐 흰 글자가 안 보여, 탐색 영역 바로 아래 벨트 위에 쓴다.
+    draw_text(img, SEARCH_ROI[0], SEARCH_ROI[1] + SEARCH_ROI[3] + 4,
+              "C A%+d B%+d" % (int(cast_a), int(cast_b)))
+    # 탐색 영역은 판별이 끝난 뒤에 그린다. 먼저 그리면 틀 픽셀이 측정에 섞인다.
+    img.draw_rectangle(SEARCH_ROI, color=SEARCH_ROI_COLOR)

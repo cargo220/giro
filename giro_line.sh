@@ -3,7 +3,7 @@
 # 넘긴 인자는 그대로 ros2 launch로 간다.
 #
 #   ./giro_line.sh
-#   ./giro_line.sh belt_port:=/dev/ttyUSB0 speed:=40
+#   ./giro_line.sh speed:=40 pause_sec:=1.5
 # 카메라는 USB로 연결된 OpenMV를 자동으로 찾는다. 화면은 rqt_image_view 창으로 뜬다.
 #
 # 아래 칸에서 q를 누르면 벨트를 세우고, 위 칸의 launch를 Ctrl+C로 내린 뒤 세션을 닫는다.
