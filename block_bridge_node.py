@@ -8,8 +8,7 @@
 #   ros2 run rqt_image_view rqt_image_view /camera/image_raw
 #
 # 통신 방식은 펌웨어에 따라 다르다. protocol:=auto(기본)면 펌웨어 버전을 묻고 고른다.
-#   4.4.x 이하(제출용 H7 4.4.2)  옛 IDE 프로토콜, omv_legacy.py
-#   그보다 새 펌웨어(RT1062)     openmv 패키지
+# 포트 찾기와 방식 고르기는 camera_link.py에 있다.
 #
 # 하는 일
 #   1. camera-ros.py를 보드에 올려 실행하고, 노출이 잠길 때까지 기다린다.
@@ -19,14 +18,10 @@
 #   /blocks            std_msgs/String     "RED@160,120 BLUE@80,90", 블럭이 없으면 ""
 #   /camera/image_raw  sensor_msgs/Image   rgb8, 보드에서 받는 대로
 
-import os
 import signal
 import sys
 import time
 from pathlib import Path
-
-# see_cam이 불러오는 pygame의 인사 문구를 로그에 남기지 않는다.
-os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -34,46 +29,12 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
-# see_cam이 openmv 1.0.7의 이벤트 처리를 고쳐 둔다. 같은 고침을 그대로 쓴다.
-import see_cam
-from openmv import Camera
-
 from board_script import strip_comments
-from omv_legacy import LegacyCamera, read_fw_version
+from camera_link import REBOOT_WAIT, find_camera_port, open_camera
 
 PREFIX = "BLOCKS"
-# 옛 IDE 프로토콜을 쓰는 마지막 펌웨어다. 이보다 새 펌웨어는 openmv 패키지로 붙는다.
-LEGACY_MAX_FW = (4, 4)
 # 이 시간 동안 BLOCKS 줄이 없으면 카메라 스크립트가 멈춘 것으로 본다.
 SILENT_SEC = 2.0
-# 이전 스크립트를 멈추면 보드가 soft reboot 한다. 그 뒤에 올려야 새 스크립트가 남는다.
-REBOOT_WAIT = 4.0
-
-
-def find_camera_port():
-    # 펌웨어마다 USB 이름이 다르다. H7 4.4.2는 OpenMV, RT1062는 MicroPython으로 잡힌다.
-    by_id = Path("/dev/serial/by-id")
-    if by_id.is_dir():
-        for pattern in ("*OpenMV*", "*MicroPython*"):
-            found = sorted(by_id.glob(pattern))
-            if found:
-                return str(found[0])
-    return see_cam.default_port()
-
-
-def open_camera(port, protocol, logger):
-    if protocol == "auto":
-        # 켜진 직후나 앞 스크립트를 정리하는 중에는 한동안 답이 없을 때가 있다. 5초까지 다시 묻는다.
-        deadline = time.time() + 5.0
-        fw = read_fw_version(port)
-        while fw is None and time.time() < deadline:
-            time.sleep(0.5)
-            fw = read_fw_version(port)
-        protocol = "legacy" if fw is not None and tuple(fw[:2]) <= LEGACY_MAX_FW else "new"
-        logger.info("펌웨어 %s, %s 방식" % (".".join(map(str, fw)) if fw else "모름", protocol))
-    cam = LegacyCamera(port) if protocol == "legacy" else Camera(port)
-    cam.connect()
-    return cam
 
 
 class BlockBridge(Node):
@@ -94,7 +55,7 @@ class BlockBridge(Node):
         self.last_line = None
         self.last_error = 0.0
 
-        self.cam = open_camera(port, protocol, self.get_logger())
+        self.cam, _ = open_camera(port, protocol, self.get_logger())
         self.cam.stop()
         deadline = time.time() + REBOOT_WAIT
         while time.time() < deadline:
