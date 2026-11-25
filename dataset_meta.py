@@ -2,12 +2,14 @@
 # 각 칸의 뜻과 예시는 dataset.md에 있다.
 #
 #   dataset/rig.json                 장비 기록. 카메라·링 높이, 조명. 바꾸면 고친다
-#   dataset/parts/<부품 ID>.json      부품 기록. 사람이 만들 때 쓴다. 결함의 깊이·폭이 여기 있다
-#   dataset/frames/<부품 ID>/NNNNNN.png   원본 프레임 (git에 넣지 않는다)
-#   dataset/frames/<부품 ID>/NNNNNN.json  프레임 기록. capture_dataset.py가 쓴다
+#   dataset/parts/<부품 ID>.json      부품 기록. 종류·색·광택. 수집 도구가 처음에 물어 만든다
+#   dataset/frames/<부품 ID>/<이름>.png   원본 프레임 (git에 넣지 않는다)
+#   dataset/frames/<부품 ID>/<이름>.json  프레임 기록. 촬영 때 넣은 결함 값이 label에 있다
 #   dataset/splits.json              부품 단위 학습·검증·시험 나눔. split_dataset.py가 쓴다
+# 프레임 이름 형식은 capture_dataset.py에 있다. 예: P003_000012_dent_d0.6_w10_e7500
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -21,18 +23,18 @@ PART_TYPES = ("flat", "cowl", "muffler")
 FINISHES = ("gloss", "semi", "matte")
 DEFECT_KINDS = ("dent", "scratch", "stain", "uneven")
 SOURCES = ("design", "measured")
+# 부품 ID는 프레임 이름 맨 앞에 붙는다. 밑줄은 이름의 칸을 가르는 데 쓰니 영문·숫자·하이픈만 쓴다.
+PART_ID_RE = re.compile(r"^[A-Za-z0-9-]+$")
 
-# 처음 쓰는 부품은 이 틀로 파일을 만든다. null을 채우고, 결함이 없으면 defects를 []로 둔다.
+# 처음 쓰는 부품은 이 틀로 파일을 만든다. 결함 값은 촬영 때 프레임마다 넣으므로 defects는 비워 둔다.
+# 결함 자리(x_mm, y_mm)처럼 부품에 붙여 둘 것이 있을 때만 defects에 적는다.
 PART_TEMPLATE = {
     "part_id": None,
     "type": None,
     "color": None,
     "finish": None,
     "made": "",
-    "defects": [
-        {"id": "D1", "kind": "dent", "depth_mm": None, "width_mm": None, "length_mm": None,
-         "x_mm": None, "y_mm": None, "source": "design", "note": ""},
-    ],
+    "defects": [],
     "note": "",
 }
 
@@ -69,6 +71,16 @@ def list_parts():
 
 def frame_files(part_id):
     return sorted((FRAMES / part_id).glob("*.png"))
+
+
+def frame_labels(part_id):
+    """부품의 프레임 기록마다 촬영 때 넣은 결함 값(label)을 돌려준다."""
+    labels = []
+    for png in frame_files(part_id):
+        meta = png.with_suffix(".json")
+        if meta.exists():
+            labels.append(load_json(meta).get("label") or {})
+    return labels
 
 
 def _number(value):

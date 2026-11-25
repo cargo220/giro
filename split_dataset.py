@@ -14,13 +14,20 @@ import argparse
 import random
 from collections import Counter
 
-from dataset_meta import SPLITS, check_part, frame_files, list_parts, load_json, part_path, write_json
+from dataset_meta import (SPLITS, check_part, frame_files, frame_labels, list_parts, load_json,
+                          part_path, write_json)
 
 NAMES = ("train", "val", "test")
 
 
+def has_defect(part):
+    # 결함 값은 촬영 때 프레임마다 넣는다. 부품 기록의 defects에 적어 둔 것도 센다.
+    return bool(part["defects"]) or any(
+        label.get("kind") not in (None, "none") for label in part["labels"])
+
+
 def group_key(part):
-    return part["type"], "defect" if part["defects"] else "normal"
+    return part["type"], "defect" if has_defect(part) else "normal"
 
 
 def main():
@@ -41,7 +48,7 @@ def main():
         elif not frame_files(pid):
             skipped.append("%s: 프레임이 없다" % pid)
         else:
-            parts[pid] = part
+            parts[pid] = dict(part, labels=frame_labels(pid))
 
     old = {}
     if SPLITS.exists() and not args.reshuffle:
@@ -54,8 +61,15 @@ def main():
         key = group_key(parts[pid])
         count = Counter(where[p] for p in where if group_key(parts[p]) == key)
         n = sum(count.values()) + 1
-        # 비율로 받아야 할 수에서 이미 받은 수를 뺀 값이 가장 큰 쪽에 넣는다. 같으면 train부터.
-        where[pid] = max(NAMES, key=lambda s: (ratio[NAMES.index(s)] * n - count[s], -NAMES.index(s)))
+        total_count = Counter(where.values())
+        n_all = len(where) + 1
+        # 비율로 받아야 할 수에서 이미 받은 수를 뺀 값이 가장 큰 쪽에 넣는다.
+        # 묶음 안에서 같으면 전체에서 더 모자란 쪽, 그것도 같으면 train부터.
+        # 묶음마다 부품이 적으면 같은 자리에서 비기는데, 전체를 보지 않으면 늘 val만 받고 test는 빈다.
+        where[pid] = max(NAMES, key=lambda s: (
+            round(ratio[NAMES.index(s)] * n - count[s], 9),
+            round(ratio[NAMES.index(s)] * n_all - total_count[s], 9),
+            -NAMES.index(s)))
 
     out = {"ratio": ratio, "seed": args.seed}
     for name in NAMES:
@@ -66,7 +80,7 @@ def main():
     for name in NAMES:
         ids = out[name]
         frames = sum(len(frame_files(p)) for p in ids)
-        defect = sum(1 for p in ids if parts[p]["defects"])
+        defect = sum(1 for p in ids if has_defect(parts[p]))
         print("%-6s %4d %6d %8d" % (name, len(ids), frames, defect))
     print("새로 나눈 부품 %d개, 그대로 둔 부품 %d개 → %s" % (len(new), len(old), SPLITS))
     for name in ("val", "test"):
