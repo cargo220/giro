@@ -40,9 +40,8 @@ SILENT_SEC = 2.0
 class BlockBridge(Node):
     def __init__(self):
         super().__init__("block_bridge")
-        port = self.declare_parameter("port", "auto").value
-        if port in ("", "auto"):
-            port = find_camera_port()
+        # 경로, config/devices.json의 카메라 이름(cam1 …), auto(한 대일 때만)를 받는다.
+        port = find_camera_port(self.declare_parameter("port", "auto").value)
         protocol = self.declare_parameter("protocol", "auto").value
         script = self.declare_parameter(
             "script", str(Path(__file__).with_name("camera-ros.py"))).value

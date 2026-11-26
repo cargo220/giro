@@ -41,7 +41,8 @@
 
 ```
 dataset/
-  rig.json                  장비 기록. 카메라·링 높이, 조명
+  rig.json                  장비 기록. 카메라·링 높이, 조명 (cam1)
+  rig-cam2.json             cam1이 아닌 카메라의 장비 기록
   parts/<부품 ID>.json       부품 기록. 만들 때 사람이 쓴다
   frames/<부품 ID>/
     P003_000012_dent_d0.6_w10_e7500.png   원본 프레임 (git에 넣지 않는다)
@@ -61,7 +62,7 @@ dataset/
 | `room_light` | 천장 조명 상태. 도장면에 비치므로 적는다 |
 | `board` | 카메라 보드 |
 
-카메라나 링 높이를 바꾸면 이 파일을 고친다. 프레임 기록마다 그때의 장비 기록이 통째로 복사된다.
+카메라나 링 높이를 바꾸면 이 파일을 고친다. 프레임 기록마다 그때의 장비 기록이 통째로 복사된다. 카메라가 둘이면 장비 기록도 카메라마다 따로다. `cam1`은 `rig.json`, 그 밖의 카메라는 `rig-<카메라>.json`이다.
 
 ### 부품 기록 `parts/<부품 ID>.json`
 
@@ -98,6 +99,7 @@ dataset/
 | `firmware` | 보드 펌웨어 버전. 새 프로토콜이면 비어 있다 |
 | `belt_mm` | 벨트 위치. 지금은 `--belt-mm`으로 손으로 적는다 |
 | `rig` | 그때의 장비 기록 |
+| `camera` | 찍은 카메라 이름 (`config/devices.json`의 cam1, cam2 …) |
 | `note` | 촬영 때 `n`으로 넣은 메모 |
 
 `kind`는 `none` 정상, `dent` 함몰, `scratch` 긁힘, `stain` 얼룩, `uneven` 색상 불균일이다.
@@ -110,6 +112,7 @@ IDE와 라인(`block_bridge_node.py`)은 카메라 포트를 같이 쓸 수 없�
 ./capture.sh --part P003
 ./capture.sh --part P003 --exposure 3000 7500
 ./capture.sh --part P003 --kind dent --depth 0.6 --width 10
+./capture.sh --part M001 --camera cam2
 ```
 
 `capture.sh`는 tmux 세션 `giro_capture`를 띄운다. 위 칸은 키보드 조작이고, 아래 칸은 최근에 저장한 파일 이름 여덟 개다. 화면이 있으면 미리보기 창도 같이 뜬다. 이미 세션이 있으면 그 세션으로 붙고, 조작 칸이 닫힌 세션이면 새로 띄운다. 위 칸이 Ctrl+C로 끝나도 세션이 닫힌다. tmux 없이 `python3 capture_dataset.py …`로 바로 돌려도 키는 같다.
@@ -228,5 +231,6 @@ python3 ring_judge.py evaluate      # 검증·시험 부품으로 헛경보와 �
 - **긁힘·얼룩 판정**: 링 판정으로 모자라면 색 판별을 붙이거나 학습 모델(YOLO 등)을 더한다. 이 PC에는 torch(CUDA)와 ultralytics가 있고, GPU는 GTX 1650 4 GB다.
 - **불량 기준 깊이**: 실물 `evaluate` 결과를 보고 "몇 mm 이상은 반드시 잡는다"를 정한다.
 - **라인 연결**: 라인이 부품을 세운 뒤(`line_controller_node.py`의 hold) 원본 프레임으로 판정하는 노드
+- **카메라별 기준**: 카메라가 둘이면 높이·조명이 달라 정상의 흔들림도 다르다. `ring_judge.py`는 지금 부품 종류마다 기준을 하나 잡는다. 두 카메라로 같은 종류를 찍게 되면 기준을 카메라마다 나눠야 한다.
 - **벨트 위치 자동 기록**: `/conveyor/position`을 받으면 `x_mm`, `y_mm`와 `px_per_mm`로 상자 자리를 계산할 수 있다.
 - **프레임 이미지를 둘 곳**: git에는 넣지 않는다.

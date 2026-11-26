@@ -17,11 +17,12 @@ set -eu
 SESSION=giro_capture
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-    if [ "$(tmux list-panes -t "$SESSION" | wc -l)" -ge 2 ]; then
-        exec tmux attach -t "$SESSION"
+# tmux는 이름 앞부분만 맞아도 그 세션을 찾는다. "="를 붙여 이름이 똑같은 세션만 찾는다.
+if tmux has-session -t "=$SESSION" 2>/dev/null; then
+    if [ "$(tmux list-panes -t "=$SESSION" | wc -l)" -ge 2 ]; then
+        exec tmux attach -t "=$SESSION"
     fi
-    tmux kill-session -t "$SESSION"
+    tmux kill-session -t "=$SESSION"
 fi
 
 args=""
@@ -33,9 +34,9 @@ if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
 fi
 
 tmux new-session -d -s "$SESSION" -n capture \
-    "bash -c \"trap 'tmux kill-session -t $SESSION' EXIT; cd '$ROOT'; python3 capture_dataset.py $args; echo; read -rp '엔터를 누르면 닫는다'\""
+    "bash -c \"trap 'tmux kill-session -t =$SESSION' EXIT; cd '$ROOT'; python3 capture_dataset.py $args; echo; read -rp '엔터를 누르면 닫는다'\""
 # 파일 이름에 그때 넣은 값이 들어가므로, 이름만 봐도 무엇을 찍었는지 보인다.
-tmux split-window -v -l 8 -t "$SESSION:capture" \
+tmux split-window -v -l 8 -t "=$SESSION:capture" \
     "bash -c \"cd '$ROOT'; watch -t -n 1 'ls -t dataset/frames/*/*.png 2>/dev/null | head -8 | xargs -r -n1 basename'\""
-tmux select-pane -t "$SESSION:capture.0"
-exec tmux attach -t "$SESSION"
+tmux select-pane -t "=$SESSION:capture.0"
+exec tmux attach -t "=$SESSION"

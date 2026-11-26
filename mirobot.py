@@ -11,8 +11,8 @@
 #   흡착          M3 S1000, 불기 M3 S500, 끄기 M3 S0
 #   직교 이동     M20 G90|G91 G00|G01 X Y Z A B C F    X Y Z는 mm, A B C는 끝단 회전(°)
 #   7축(벨트)     M21 G91 G01 D F
-# 다기능 컨트롤러 USB(115200)로 붙은 팔은 접두어 없이 부른다. 여러 팔을 RS485로 부를 때는
-# SDK처럼 "@주소"를 앞에 붙인다. 두 번째 팔이 어느 주소로 답하는지는 probe로 확인해 arms.json에 적는다.
+# 다기능 컨트롤러 USB(115200)로 붙은 팔은 접두어 없이 부른다. 이 셀의 USB 연결에서 "@주소"를 붙이면
+# E100 오류가 났다(arm.md). 컨트롤러가 둘이면 arms.json의 팔마다 controller(devices.json 이름)를 적는다.
 #
 # 상태 줄의 Angle(ABCDXYZ)는 A B C D X Y Z 순서다. 관절로는 J4 J5 J6, 7축, J1 J2 J3이다.
 
@@ -42,7 +42,7 @@ BLOCKED = ("Alarm", "Hold", "Home")
 DEFAULT_CONFIG = {
     "port": "auto",
     "baud": EXBOX_BAUD,
-    "arms": {"arm1": {"address": None, "label": "접두어 없이 답하는 팔 (벨트 D축이 붙은 팔)"}},
+    "arms": {"arm1": {"controller": "ctrl1", "address": None, "label": "벨트1 D축이 붙은 컨트롤러의 팔"}},
     "belt_arm": "arm1",
     "feed_mm_min": 2000,
     "z_min_mm": None,
@@ -159,13 +159,19 @@ class Arm:
         self.send("M21 G91 G01 D%.2f F%d" % (mm, feed))
 
 
-def open_arms(cfg):
-    """(컨트롤러, {이름: Arm})을 돌려준다."""
-    port = find_belt_port() if cfg["port"] in ("", "auto") else cfg["port"]
-    ctrl = Controller(open_serial(port, cfg["baud"]))
-    arms = {name: Arm(ctrl, name, a.get("address"), a.get("label", ""))
-            for name, a in cfg["arms"].items()}
-    return ctrl, arms, port
+def open_arms(cfg, only=None):
+    """({포트: Controller}, {이름: Arm})을 돌려준다.
+    팔마다 controller(devices.json의 컨트롤러 이름이나 경로)를 적을 수 있다. 없으면 맨 위 port를 쓴다.
+    같은 포트의 팔은 컨트롤러 하나를 같이 쓴다. only를 주면 그 팔과 그 컨트롤러만 연다."""
+    ctrls, arms = {}, {}
+    for name, a in cfg["arms"].items():
+        if only is not None and name != only:
+            continue
+        port = find_belt_port(a.get("controller") or cfg["port"])
+        if port not in ctrls:
+            ctrls[port] = Controller(open_serial(port, cfg["baud"]))
+        arms[name] = Arm(ctrls[port], name, a.get("address"), a.get("label", ""))
+    return ctrls, arms
 
 
 def describe(status):
@@ -175,7 +181,7 @@ def describe(status):
 
 
 def probe(args, cfg):
-    port = find_belt_port() if args.port in ("", "auto") else args.port
+    port = find_belt_port(args.port)
     ctrl = Controller(open_serial(port, args.baud))
     print("포트 %s, %d bps. 상태(?)만 묻고 팔은 움직이지 않는다" % (port, args.baud))
     found = []
@@ -208,13 +214,14 @@ def probe(args, cfg):
 
 
 def show_status(args, cfg):
-    ctrl, arms, port = open_arms(cfg)
+    ctrls, arms = open_arms(cfg)
     for name, arm in arms.items():
         status = arm.status()
         print("%-6s %s" % (name, "답 없음" if status is None else describe(status)))
-    for line in ctrl.pop_messages():
-        print("컨트롤러: %s" % line)
-    ctrl.ser.close()
+    for port, ctrl in ctrls.items():
+        for line in ctrl.pop_messages():
+            print("컨트롤러 %s: %s" % (port, line))
+        ctrl.ser.close()
     return 0
 
 
@@ -222,7 +229,7 @@ def main():
     ap = argparse.ArgumentParser(description="WLKATA Mirobot 상태 확인")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("probe", help="주소마다 상태를 물어 답하는 팔을 찾는다")
-    p.add_argument("--port", default="auto")
+    p.add_argument("--port", default="auto", help="경로, devices.json의 컨트롤러 이름(ctrl1 …), auto")
     p.add_argument("--baud", type=int, default=EXBOX_BAUD)
     p.add_argument("--first", type=int, default=1)
     p.add_argument("--last", type=int, default=4)

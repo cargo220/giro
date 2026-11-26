@@ -1,0 +1,20 @@
+# 두 번째 라인(line2)의 line_controller_node.py 파라미터. config/devices.json의 lines.line2가 이 파일을 쓴다.
+# axis·px_per_mm·center는 line1 값을 그대로 옮겨 둔 것이다. 카메라2와 벨트2를 놓은 뒤
+# python3 calibrate_belt.py --line line2로 다시 잰다.
+line_controller:
+  ros__parameters:
+    axis: "y"                 # 벨트 방향이 화면의 어느 축인지
+    px_per_mm: 1.8          # D 1 mm에 그 축이 움직이는 px, 부호 포함
+    camera_direction: -1    # 카메라 쪽으로 보내는 D 부호. 음수가 카메라 쪽이다
+    center_x: 189.0         # camera-ros.py SEARCH_ROI 가운데
+    center_y: 134.0
+    feed_speed: 30          # 공급 속도 0~100. 30이면 12 mm/s
+    approach_px: 40.0       # 덩어리 중심이 중앙에서 이만큼 앞에 오면 세우고 정렬한다
+    tolerance_px: 5.0       # 정렬 허용 오차
+    max_align: 3            # 정렬 이동을 최대 몇 번 보낼지
+    cluster_gap_px: 45.0    # 블럭 중심끼리 이보다 가까우면 한 덩어리
+    match_px: 30.0          # 예측 위치와 이보다 가까우면 같은 블럭(ID)
+    lost_sec: 1.0           # 이 시간 못 보면 블럭이 없어진 것으로 본다
+    clear_sec: 1.0          # 세운 덩어리를 다 치우고 이만큼 지나면 다음 덩어리로 간다
+    settle_sec: 0.4         # 벨트가 선 뒤 이만큼 기다렸다 잰다
+    feed_timeout_sec: 30.0  # 공급 중 이 시간 동안 블럭이 안 보이면 벨트를 세우고 수동으로 돌아간다

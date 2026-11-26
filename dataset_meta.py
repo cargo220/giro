@@ -1,7 +1,8 @@
 # 판정 데이터 폴더의 기록 형식이다. capture_dataset.py와 split_dataset.py가 같이 쓴다.
 # 각 칸의 뜻과 예시는 dataset.md에 있다.
 #
-#   dataset/rig.json                 장비 기록. 카메라·링 높이, 조명. 바꾸면 고친다
+#   dataset/rig.json                 장비 기록. 카메라·링 높이, 조명. 바꾸면 고친다 (cam1)
+#   dataset/rig-<카메라>.json         cam1이 아닌 카메라의 장비 기록 (rig-cam2.json …)
 #   dataset/parts/<부품 ID>.json      부품 기록. 종류·색·광택. 수집 도구가 처음에 물어 만든다
 #   dataset/frames/<부품 ID>/<이름>.png   원본 프레임 (git에 넣지 않는다)
 #   dataset/frames/<부품 ID>/<이름>.json  프레임 기록. 촬영 때 넣은 결함 값이 label에 있다
@@ -59,6 +60,11 @@ def write_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
+
+
+def rig_path(camera="cam1"):
+    """카메라마다 장비 기록이 따로 있다. cam1은 예전 그대로 dataset/rig.json이다."""
+    return RIG if camera == "cam1" else DATASET / ("rig-%s.json" % camera)
 
 
 def part_path(part_id):

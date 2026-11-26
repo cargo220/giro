@@ -167,6 +167,26 @@ OpenMV는 MicroPython이라 ROS를 돌릴 수 없다. 그렇다고 카메라가 
 
 ROS 2를 고른 것은 기능이 많아서가 아니다. 장치가 늘어날 2차를 앞두고 **장치별 사정을 각자의 노드에 가두고, 그 사이를 눈에 보이는 메시지로 잇기 위해서**다. Mirobot과 MT4는 WLKATA가 ROS 2 패키지와 URDF를 공개하고 있다. 그래서 같은 토픽 구조를 Gazebo나 MoveIt 시뮬레이션으로 이어 갈 여지도 남는다.
 
+## 벨트·카메라를 두 대로
+
+벨트나 카메라가 두 대가 되면 장치를 이름으로 고른다. 이름과 실제 포트는 `config/devices.json`에 있다.
+
+```
+python3 devices.py                  # 연결된 장치와 설정을 견줘 보인다. 포트를 열지 않는다
+./giro_line.sh                      # line1: 벨트1 + 카메라1, 토픽은 /blocks, /conveyor/... 그대로
+./giro_line.sh line:=line2          # line2: 벨트2 + 카메라2, 토픽은 /line2/blocks처럼 앞에 붙는다
+python3 calibrate_belt.py --line line2
+```
+
+- **장치 이름**: 컨트롤러는 `ctrl1`, `ctrl2`, 카메라는 `cam1`, `cam2`다. 벨트·팔 도구는 컨트롤러 이름을, 카메라 도구는 카메라 이름을 포트 자리에 받는다. 경로를 그대로 줘도 된다.
+- **auto**: 그 종류 장치가 한 대만 꽂혀 있을 때만 그 장치를 고른다. 두 대면 아무거나 잡지 않고 멈춘다.
+- **컨트롤러 포트**: 다기능 컨트롤러(CH340)는 장치 이름에 일련번호가 없어, 두 대면 `/dev/serial/by-id` 이름이 겹친다. 그래서 USB 꽂은 자리 기준인 `/dev/serial/by-path/…`로 적는다. 컨트롤러마다 꽂는 USB 자리를 정해 둔다.
+- **카메라 포트**: OpenMV는 일련번호가 있어 `/dev/serial/by-id/…`로 적는다.
+- **라인**: `lines`의 라인마다 namespace, 컨트롤러, 카메라, 보정 파일이 묶여 있다. `line1`은 namespace가 없어 지금까지의 토픽 이름이 그대로다. `line2`는 `config/line2.yaml`을 쓰고, 보정값은 `calibrate_belt.py --line line2`로 다시 잰다.
+- **팔·수집**: 팔은 `config/arms.json`의 팔마다 `controller`를 적는다(`arm.md`). 수집 도구는 `--camera cam2`로 카메라를 고르고, 장비 기록은 `dataset/rig-cam2.json`을 쓴다(`dataset.md`).
+
+`ctrl2`, `cam2`의 포트는 비워 두었다. 장치를 꽂은 뒤 `python3 devices.py`가 보여 주는 이름을 적는다.
+
 ## 판별 대상
 
 1차의 종류는 색 다섯 가지다. 파랑, 초록, 빨강, 보라, 노랑.

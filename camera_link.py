@@ -7,7 +7,6 @@
 
 import os
 import time
-from pathlib import Path
 
 # see_cam이 불러오는 pygame의 인사 문구를 로그에 남기지 않는다.
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -16,6 +15,7 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import see_cam
 from openmv import Camera
 
+import devices
 from omv_legacy import LegacyCamera, read_fw_version
 
 # 옛 IDE 프로토콜을 쓰는 마지막 펌웨어다. 이보다 새 펌웨어는 openmv 패키지로 붙는다.
@@ -24,15 +24,11 @@ LEGACY_MAX_FW = (4, 4)
 REBOOT_WAIT = 4.0
 
 
-def find_camera_port():
-    # 펌웨어마다 USB 이름이 다르다. H7 4.4.2는 OpenMV, RT1062는 MicroPython으로 잡힌다.
-    by_id = Path("/dev/serial/by-id")
-    if by_id.is_dir():
-        for pattern in ("*OpenMV*", "*MicroPython*"):
-            found = sorted(by_id.glob(pattern))
-            if found:
-                return str(found[0])
-    return see_cam.default_port()
+def find_camera_port(value="auto"):
+    """카메라 포트. 경로, config/devices.json의 카메라 이름(cam1 …), auto를 받는다.
+    펌웨어마다 USB 이름이 다르다. H7 4.4.2는 OpenMV, RT1062는 MicroPython으로 잡힌다.
+    OpenMV가 두 대 꽂혀 있는데 auto면 아무거나 잡지 않고 DeviceError를 낸다."""
+    return devices.resolve("camera", value)
 
 
 def open_camera(port, protocol, logger):

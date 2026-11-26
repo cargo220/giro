@@ -4,6 +4,8 @@
 #
 #   ./giro_line.sh
 #   ./giro_line.sh speed:=40 pause_sec:=1.5
+#   ./giro_line.sh line:=line2         # 두 번째 벨트·카메라. 세션 이름은 giro_line-line2
+# line은 config/devices.json의 lines 이름이다. 키보드 칸도 그 라인의 namespace로 띄운다.
 # 카메라는 USB로 연결된 OpenMV를 자동으로 찾는다. 화면은 rqt_image_view 창으로 뜬다.
 #
 # 아래 칸에서 q를 누르면 벨트를 세우고, 위 칸의 launch를 Ctrl+C로 내린 뒤 세션을 닫는다.
@@ -11,12 +13,22 @@
 
 set -eu
 
-SESSION=giro_line
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROS_SETUP=/opt/ros/humble/setup.bash
 
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-    exec tmux attach -t "$SESSION"
+line=line1
+for arg in "$@"; do
+    case "$arg" in line:=*) line="${arg#line:=}" ;; esac
+done
+ns=$(cd "$ROOT" && python3 devices.py namespace "$line")
+SESSION=giro_line
+[ "$line" != "line1" ] && SESSION="giro_line-$line"
+teleop_ns=""
+[ -n "$ns" ] && teleop_ns=" -r __ns:=/$ns"
+
+# tmux는 이름 앞부분만 맞아도 그 세션을 찾는다. "="를 붙여 이름이 똑같은 세션만 찾는다.
+if tmux has-session -t "=$SESSION" 2>/dev/null; then
+    exec tmux attach -t "=$SESSION"
 fi
 
 # 칸마다 ROS 환경을 불러온다. ROS_DOMAIN_ID는 이 셸의 값을 그대로 넘긴다.
@@ -32,7 +44,7 @@ done
 
 tmux new-session -d -s "$SESSION" -n line \
     "bash -c \"$env_cmd; ros2 launch launch/giro_line.launch.py $launch_args; echo; read -rp '엔터를 누르면 닫는다'\""
-tmux split-window -v -l 6 -t "$SESSION:line" \
-    "bash -c \"$env_cmd; python3 conveyor_teleop.py --ros-args -p speed:=$speed; tmux send-keys -t $SESSION:line.0 C-c; sleep 3; tmux kill-session -t $SESSION\""
-tmux select-pane -t "$SESSION:line.1"
-exec tmux attach -t "$SESSION"
+tmux split-window -v -l 6 -t "=$SESSION:line" \
+    "bash -c \"$env_cmd; python3 conveyor_teleop.py --ros-args -p speed:=$speed$teleop_ns; tmux send-keys -t =$SESSION:line.0 C-c; sleep 3; tmux kill-session -t =$SESSION\""
+tmux select-pane -t "=$SESSION:line.1"
+exec tmux attach -t "=$SESSION"

@@ -2,7 +2,11 @@
 #
 #   ros2 launch launch/giro_line.launch.py
 #   ros2 launch launch/giro_line.launch.py speed:=40 pause_sec:=1.5
-# 포트는 둘 다 auto로 /dev/serial/by-id에서 찾는다. 벨트는 CH340 컨트롤러, 카메라는 OpenMV다.
+#   ros2 launch launch/giro_line.launch.py line:=line2     # 두 번째 벨트·카메라
+# line은 config/devices.json의 lines 이름이다. 그 라인의 namespace, 컨트롤러, 카메라, 보정 파일을 쓴다.
+# line1은 namespace가 없어 토픽이 /blocks, /conveyor/... 그대로다. line2는 /line2/blocks처럼 앞에 붙는다.
+# 두 라인을 같이 돌리려면 터미널마다 하나씩 띄운다(giro_line.sh line:=line2).
+# belt_port, cam_port를 주면 라인 설정 대신 그 값(경로나 장치 이름)을 쓴다.
 # 시작 전: OpenMV IDE 연결을 끊고, Mirobot이 Alarm이면 팔 주변을 비운 뒤 원점 복귀를 해 둔다.
 #
 # 띄우는 것
@@ -19,18 +23,25 @@
 from pathlib import Path
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, EmitEvent, ExecuteProcess, RegisterEventHandler
+import sys
+
+from launch.actions import (DeclareLaunchArgument, EmitEvent, ExecuteProcess, OpaqueFunction,
+                            RegisterEventHandler)
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+import devices  # noqa: E402  저장소 폴더를 경로에 넣은 뒤에 불러온다
 
 
-def script(name, *params):
-    # 노드 스크립트를 python3로 돌리고 ROS 파라미터를 붙인다.
+def script(name, namespace, *params):
+    # 노드 스크립트를 python3로 돌리고 namespace와 ROS 파라미터를 붙인다.
     cmd = ["python3", str(ROOT / name), "--ros-args"]
+    if namespace:
+        cmd += ["-r", "__ns:=/" + namespace]
     for key, value in params:
         cmd += ["-p", [key, ":=", value]]
     return cmd
@@ -38,10 +49,12 @@ def script(name, *params):
 
 def generate_launch_description():
     args = [
+        DeclareLaunchArgument("line", default_value="line1",
+                              description="config/devices.json의 라인 이름. namespace·포트·보정 파일을 정한다"),
         DeclareLaunchArgument("belt_mode", default_value="exbox",
                               description="exbox(다기능 컨트롤러 D축) 또는 ms4220(RS485 직결)"),
-        DeclareLaunchArgument("belt_port", default_value="auto",
-                              description="벨트 포트, auto면 /dev/serial/by-id의 CH340 컨트롤러"),
+        DeclareLaunchArgument("belt_port", default_value="",
+                              description="벨트 포트(경로나 장치 이름). 비우면 라인의 컨트롤러"),
         DeclareLaunchArgument("address", default_value="10",
                               description="MS4220 RS485 주소"),
         DeclareLaunchArgument("pause_sec", default_value="0.0",
@@ -50,8 +63,8 @@ def generate_launch_description():
                               description="자동 라인을 켠 채로 시작할지"),
         DeclareLaunchArgument("camera", default_value="true",
                               description="카메라 중계 노드를 띄울지"),
-        DeclareLaunchArgument("cam_port", default_value="auto",
-                              description="OpenMV USB 포트, auto면 /dev/serial/by-id의 OpenMV 보드"),
+        DeclareLaunchArgument("cam_port", default_value="",
+                              description="OpenMV 포트(경로나 장치 이름). 비우면 라인의 카메라"),
         DeclareLaunchArgument("image_view", default_value="true",
                               description="rqt_image_view로 카메라 화면을 띄울지"),
         DeclareLaunchArgument("speed", default_value="40",
@@ -63,32 +76,45 @@ def generate_launch_description():
                               description="키보드 창을 여는 명령, 예: 'gnome-terminal --wait --'"),
     ]
 
+    return LaunchDescription(args + [OpaqueFunction(function=line_actions)])
+
+
+def line_actions(context):
+    """라인 이름으로 namespace·포트·보정 파일을 정해 노드들을 만든다."""
+    arg = lambda name: LaunchConfiguration(name).perform(context)
+    line = devices.line(arg("line"))
+    ns = line.get("namespace", "")
+    belt_port = arg("belt_port") or line["controller"]
+    cam_port = arg("cam_port") or line["camera"]
+    params_file = str(ROOT / line["params"])
+    image_topic = "/%s/camera/image_raw" % ns if ns else "/camera/image_raw"
+
     conveyor = ExecuteProcess(
         name="conveyor",
-        cmd=script("conveyor_node.py",
+        cmd=script("conveyor_node.py", ns,
                    ("mode", LaunchConfiguration("belt_mode")),
-                   ("port", LaunchConfiguration("belt_port")),
+                   ("port", belt_port),
                    ("address", LaunchConfiguration("address")),
                    ("pause_sec", LaunchConfiguration("pause_sec"))),
         output="screen",
     )
     bridge = ExecuteProcess(
         name="block_bridge",
-        cmd=script("block_bridge_node.py",
-                   ("port", LaunchConfiguration("cam_port"))),
+        cmd=script("block_bridge_node.py", ns,
+                   ("port", cam_port)),
         output="screen",
         condition=IfCondition(LaunchConfiguration("camera")),
     )
     controller = ExecuteProcess(
         name="line_controller",
-        cmd=script("line_controller_node.py",
+        cmd=script("line_controller_node.py", ns,
                    ("auto", LaunchConfiguration("auto")))
-        + ["--params-file", str(ROOT / "config" / "line.yaml")],
+        + ["--params-file", params_file],
         output="screen",
     )
     image_view = ExecuteProcess(
         name="image_view",
-        cmd=["ros2", "run", "rqt_image_view", "rqt_image_view", "/camera/image_raw"],
+        cmd=["ros2", "run", "rqt_image_view", "rqt_image_view", image_topic],
         output="screen",
         # Qt 창은 SIGINT에 잘 반응하지 않는다. 오래 기다리지 않고 1초 뒤 SIGTERM으로 닫는다.
         sigterm_timeout="1",
@@ -96,7 +122,7 @@ def generate_launch_description():
     )
     teleop = ExecuteProcess(
         name="conveyor_teleop",
-        cmd=script("conveyor_teleop.py",
+        cmd=script("conveyor_teleop.py", ns,
                    ("speed", LaunchConfiguration("speed"))),
         prefix=LaunchConfiguration("terminal"),
         output="screen",
@@ -107,5 +133,4 @@ def generate_launch_description():
         target_action=teleop,
         on_exit=[EmitEvent(event=Shutdown(reason="키보드 창 종료"))],
     ))
-
-    return LaunchDescription(args + [conveyor, bridge, controller, image_view, teleop, stop_with_teleop])
+    return [conveyor, bridge, controller, image_view, teleop, stop_with_teleop]

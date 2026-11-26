@@ -7,6 +7,7 @@ import select
 import shutil
 import sys
 import termios
+import time
 import tty
 import unicodedata
 
@@ -35,6 +36,7 @@ class Terminal:
         self.fd = sys.stdin.fileno()
         self.saved = termios.tcgetattr(self.fd)
         self.status = ""
+        self.hint_at = 0.0    # 한글 입력 안내를 마지막으로 띄운 때. 3초에 한 번만 띄운다
 
     def __enter__(self):
         tty.setcbreak(self.fd)
@@ -82,5 +84,15 @@ class Terminal:
             ready, _, _ = select.select([self.fd], [], [], 0.05)
             if ready:
                 os.read(self.fd, 2)
+            return None
+        if ch[0] >= 0xC0:
+            # 한글처럼 여러 바이트인 글자는 나머지 바이트까지 읽는다. 한/영이 한글이면 w가 ㅈ으로 들어온다.
+            more = 1 if ch[0] < 0xE0 else 2 if ch[0] < 0xF0 else 3
+            ch += os.read(self.fd, more)
+            now = time.time()
+            if now - self.hint_at > 3.0:
+                self.hint_at = now
+                self.say("한글 입력이 들어왔다(%s). 키는 영문으로 받는다. 한/영 키로 영문으로 바꾼다"
+                         % ch.decode("utf-8", "replace"))
             return None
         return ch.decode("utf-8", "replace")

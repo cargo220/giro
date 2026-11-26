@@ -10,6 +10,7 @@
 #   python3 capture_dataset.py --part P003 --exposure 3000 7500    # 한 번 저장에 노출마다 한 장
 #   python3 capture_dataset.py --part P003 --kind dent --depth 0.6 --width 10
 #   python3 capture_dataset.py --part C001 --auto 0.5 --count 40   # 0.5초마다 저장. 벨트로 훑을 때
+#   python3 capture_dataset.py --part M001 --camera cam2           # 두 번째 카메라. 장비 기록은 rig-cam2.json
 #
 # 키 (터미널에서. --view면 창에서도 받는다)
 #   스페이스, s  다음 프레임 저장       a  자동 저장 켜고 끄기
@@ -23,7 +24,7 @@
 # 함몰은 깊이와 폭, 긁힘은 길이가 있어야 저장한다. 링은 깊이가 아니라 기울기를 보기 때문이다.
 # 저장은 키를 누른 뒤 새로 찍힌 프레임으로 한다. 손이 화면에 있던 프레임은 들어가지 않는다.
 # 처음 쓰는 부품이면 종류·색·광택을 물어 dataset/parts/<부품 ID>.json을 만든다.
-# 장비 기록 dataset/rig.json은 없으면 틀을 만들고 멈춘다. 채운 뒤 다시 실행한다.
+# 장비 기록(cam1은 dataset/rig.json, 다른 카메라는 dataset/rig-<카메라>.json)은 없으면 틀을 만들고 멈춘다.
 #
 # 프레임은 RGB565 그대로 받아 RGB888 PNG로 남긴다. 5·6비트를 8비트로 늘린 것이라 잃는 값이 없다.
 # 미리보기 창의 글자는 창에만 그리고 저장하는 프레임에는 넣지 않는다.
@@ -42,8 +43,8 @@ import numpy as np
 
 from board_script import strip_comments
 from term_keys import Terminal
-from dataset_meta import (DEFECT_KINDS, FINISHES, FRAMES, PART_ID_RE, PART_TEMPLATE, PART_TYPES, RIG,
-                          RIG_TEMPLATE, check_rig, load_json, part_path, write_json)
+from dataset_meta import (DEFECT_KINDS, FINISHES, FRAMES, PART_ID_RE, PART_TEMPLATE, PART_TYPES,
+                          RIG_TEMPLATE, check_rig, load_json, part_path, rig_path, write_json)
 
 BOARD_SCRIPT = Path(__file__).with_name("camera-capture.py")
 # 표본 픽셀과 이만큼 넘게 다르면 바이트 순서를 믿지 않는다. 5비트를 8비트로 늘리는 반올림 차이보다 크다.
@@ -165,13 +166,14 @@ def board_source(exposures):
     return strip_comments(text), rgb
 
 
-def ready_rig():
-    """장비 기록을 읽는다. 없으면 틀을 만들고, 빈 칸이 있으면 알려 주고 None을 돌려준다."""
-    if not RIG.exists():
-        write_json(RIG, RIG_TEMPLATE)
-        print("장비 기록 틀을 만들었다: %s  채운 뒤 다시 실행한다" % RIG)
+def ready_rig(camera):
+    """그 카메라의 장비 기록을 읽는다. 없으면 틀을 만들고, 빈 칸이 있으면 알려 주고 None을 돌려준다."""
+    path = rig_path(camera)
+    if not path.exists():
+        write_json(path, RIG_TEMPLATE)
+        print("장비 기록 틀을 만들었다: %s  채운 뒤 다시 실행한다" % path)
         return None
-    rig = load_json(RIG)
+    rig = load_json(path)
     problems = check_rig(rig)
     for p in problems:
         print(p)
@@ -313,6 +315,7 @@ class Capture:
             "exposure_us": frame["exposure_us"],
             "gain_db": frame["gain_db"],
             "rgb_gain_db": self.rgb_gain if self.wb_ok else None,
+            "camera": self.args.camera,
             "firmware": list(self.fw) if self.fw else None,
             "label": req["label"],
             "belt_mm": self.args.belt_mm,
@@ -433,7 +436,8 @@ class Capture:
 def main():
     ap = argparse.ArgumentParser(description="판정용 원본 프레임 수집")
     ap.add_argument("--part", required=True, help="부품 ID. 영문·숫자·하이픈")
-    ap.add_argument("--port", default="auto")
+    ap.add_argument("--camera", default="cam1", help="config/devices.json의 카메라 이름. 장비 기록도 이 카메라 것을 쓴다")
+    ap.add_argument("--port", default="", help="카메라 포트 경로. 주면 --camera의 포트 대신 쓴다")
     ap.add_argument("--protocol", default="auto", choices=("auto", "legacy", "new"))
     ap.add_argument("--exposure", type=int, nargs="+", default=[7500], help="노출 µs, 여럿이면 번갈아")
     ap.add_argument("--auto", type=float, default=0.0, help="이 초마다 저장. 0이면 키로만")
@@ -465,7 +469,7 @@ def main():
         # 키로 값을 고칠 수 없으니 한 장도 저장하지 못한 채 돌게 된다. 시작 전에 멈춘다.
         print(problem.replace("(d)", "(--depth)").replace("(w)", "(--width)").replace("(l)", "(--length)"))
         return 2
-    rig = ready_rig()
+    rig = ready_rig(args.camera)
     if rig is None:
         return 1
     ok, msg = ensure_part(args.part, plain_ask if interactive else None)
@@ -476,11 +480,11 @@ def main():
 
     # 카메라 모듈은 여기서 불러온다. 기록이 덜 찼을 때는 openmv·pygame을 불러오지 않는다.
     from camera_link import REBOOT_WAIT, find_camera_port, open_camera
-    port = find_camera_port() if args.port in ("", "auto") else args.port
 
     class Log:
         info = staticmethod(print)
     try:
+        port = find_camera_port(args.port or args.camera)
         cam, fw = open_camera(port, args.protocol, Log)
     except Exception as exc:
         hint = " (OpenMV IDE가 포트를 쓰고 있으면 연결을 끊는다)" if "busy" in str(exc) else ""
@@ -500,8 +504,8 @@ def main():
             cam.exec(source)
             # IDE 화면 전송은 끈다. 켜 두면 보드가 프레임마다 JPEG를 만드느라 느려진다.
             cam.streaming(False)
-            term.say("카메라 %s에서 %s 실행, 노출 %s µs" % (
-                port, BOARD_SCRIPT.name, " / ".join(map(str, args.exposure))))
+            term.say("카메라 %s(%s)에서 %s 실행, 노출 %s µs" % (
+                args.camera, port, BOARD_SCRIPT.name, " / ".join(map(str, args.exposure))))
             if interactive:
                 term.say(HELP)
             while True:

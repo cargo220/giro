@@ -20,9 +20,10 @@ import re
 import sys
 import threading
 import time
-from pathlib import Path
 
 import serial
+
+import devices
 
 BAUD = 38400
 SPEED_LIMIT = 100
@@ -190,20 +191,16 @@ class ExboxConveyor:
         self._target += direction * step
 
 
-def find_belt_port():
-    # 다기능 컨트롤러는 CH340(1a86)으로 잡힌다. USB를 다시 꽂으면 ttyUSB 번호가 바뀌어
-    # by-id 이름으로 찾는다.
-    by_id = Path("/dev/serial/by-id")
-    if by_id.is_dir():
-        found = sorted(by_id.glob("*1a86*"))
-        if found:
-            return str(found[0])
-    return "/dev/ttyUSB0"
+def find_belt_port(value="auto"):
+    """벨트 컨트롤러 포트. 경로, config/devices.json의 장치 이름(ctrl1 …), auto를 받는다.
+    USB를 다시 꽂으면 ttyUSB 번호가 바뀌어 /dev/serial 아래 이름으로 찾는다.
+    CH340이 두 대 꽂혀 있는데 auto면 아무거나 잡지 않고 DeviceError를 낸다."""
+    return devices.resolve("controller", value)
 
 
 def open_belt(mode, port, address=10):
-    if port in ("", "auto"):
-        port = find_belt_port()
+    if not port.startswith("/"):
+        port = find_belt_port(port)
     if mode == "exbox":
         return ExboxConveyor(port)
     return Conveyor(port, address)
@@ -213,7 +210,7 @@ def main():
     parser = argparse.ArgumentParser(description="WLKATA 컨베이어 제어")
     parser.add_argument("--mode", choices=("exbox", "ms4220"), default="exbox")
     parser.add_argument("--port", default="auto",
-                        help="auto면 /dev/serial/by-id에서 CH340 컨트롤러를 찾는다")
+                        help="경로, config/devices.json의 컨트롤러 이름(ctrl1 …), auto(한 대일 때만)")
     parser.add_argument("--address", type=int, default=10,
                         help="ms4220 RS485 주소, 주소 없이 보내려면 -1")
     sub = parser.add_subparsers(dest="cmd", required=True)

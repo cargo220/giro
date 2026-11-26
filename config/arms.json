@@ -3,8 +3,14 @@
   "baud": 115200,
   "arms": {
     "arm1": {
+      "controller": "ctrl1",
       "address": null,
-      "label": "접두어 없이 답하는 팔 (벨트 D축이 붙은 팔)"
+      "label": "ctrl1(USB 3번 자리) 컨트롤러의 팔"
+    },
+    "arm2": {
+      "controller": "ctrl2",
+      "address": null,
+      "label": "ctrl2(USB 4번 자리) 컨트롤러의 팔"
     }
   },
   "belt_arm": "arm1",

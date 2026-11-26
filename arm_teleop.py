@@ -4,6 +4,7 @@
 #
 #   python3 arm_teleop.py
 #   python3 arm_teleop.py --arm arm2
+#   python3 arm_teleop.py --arm arm2 --only      # 이 팔과 그 컨트롤러만 연다. arm.sh가 팔마다 한 칸씩 띄울 때 쓴다
 #
 # 키
 #   1 2        조종할 팔 고르기 (config/arms.json에 적힌 순서)
@@ -25,6 +26,7 @@
 
 import argparse
 import json
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -56,16 +58,16 @@ KEY_HELP = (
     ("a d", "Y", "Y +/-"),
     ("r f", "Z", "Z +/- (위·아래)"),
     ("z c", "회전", "끝단 회전 C +/-"),
-    ("+ -", "칸", "한 칸 크기 1 → 5 → 10 → 20"),
+    ("+ -", "칸", "한 칸 크기 1·5·10·20"),
     ("p", "흡착", "흡착 켜기/끄기"),
     ("b", "놓기", "0.5초 불어서 놓기"),
-    (", .", "벨트", "벨트 -/+ 10 mm (- 가 카메라 쪽)"),
+    (", .", "벨트", "벨트 -/+10mm (- 카메라쪽)"),
     ("스페이스", "저장", "지금 자리를 이름 붙여 저장"),
-    ("g", "가기", "저장한 자리로 가기 (올라 → 옮기고 → 내려감)"),
+    ("g", "가기", "저장한 자리로 가기"),
     ("l", "목록", "저장한 자리 목록"),
-    ("t", "안전높이", "지금 Z를 안전 높이로 정하기"),
-    ("h → y", "원점", "원점 복귀 (y로 한 번 더 확인)"),
-    ("?", "도움말", "이 목록을 조종 칸에 한 줄로"),
+    ("t", "안전높이", "지금 Z를 안전 높이로"),
+    ("h → y", "원점", "원점 복귀 (y로 확인)"),
+    ("?", "도움말", "키 목록을 조종 칸에"),
     ("q", "끝", "끝내기"),
 )
 HELP = "  ".join("%s %s" % (k, short) for k, short, _ in KEY_HELP)
@@ -86,9 +88,8 @@ def save_poses(poses):
 
 
 class Teleop:
-    def __init__(self, cfg, ctrl, arms, start, term):
+    def __init__(self, cfg, arms, start, term, only=False):
         self.cfg = cfg
-        self.ctrl = ctrl
         self.arms = arms
         self.order = list(arms)
         self.arm = arms[start]
@@ -100,11 +101,15 @@ class Teleop:
         self.asking_home = False
         self.check = None     # 보낸 명령이 상태에 반영됐는지 볼 것
         self.halted = False   # 컨트롤러가 명령을 쌓아 두는 답을 했다. 다시 띄울 때까지 보내지 않는다
-        self.poses = load_poses()
+        self.only = only      # 팔 하나만 연 칸이다. 다른 팔·벨트는 그 팔의 칸에서 다룬다
 
     def poll(self):
+        # 옆 칸이 t로 정한 안전 높이 같은 값을 반영하려고 설정을 다시 읽는다. 작은 파일이라 부담이 없다.
+        fresh = mb.load_config()
+        for key in ("safe_z_mm", "z_min_mm", "feed_mm_min", "belt_arm"):
+            self.cfg[key] = fresh.get(key, self.cfg.get(key))
         self.status = self.arm.status()
-        for line in self.ctrl.pop_messages():
+        for line in self.arm.ctrl.pop_messages():
             self.term.say("컨트롤러: %s" % line)
             if line in HALT_REPLIES and not self.halted:
                 self.halted = True
@@ -214,6 +219,9 @@ class Teleop:
         if self.stopped():
             return
         belt_arm = self.arms.get(self.cfg.get("belt_arm"))
+        if belt_arm is None and self.only:
+            self.term.say("벨트는 %s 칸에서 움직인다. 이 칸은 %s만 연다" % (self.cfg.get("belt_arm"), self.arm.name))
+            return
         if belt_arm is None:
             self.term.say("config/arms.json의 belt_arm이 팔 이름과 맞지 않는다")
             return
@@ -234,19 +242,21 @@ class Teleop:
         if not name or not name.strip():
             return
         name = name.strip()
-        mine = self.poses.setdefault(self.arm.name, {})
-        if name in mine:
+        if name in load_poses().get(self.arm.name, {}):
             answer = self.term.ask("%s는 이미 있다. 덮어쓰려면 y: " % name)
             if (answer or "").strip().lower() != "y":
                 return
-        mine[name] = {"pose": self.status["pose"], "joints": self.status["joints"], "d": self.status["d"],
-                      "time": datetime.now().astimezone().isoformat(timespec="seconds")}
-        save_poses(self.poses)
+        # 옆 칸도 같은 파일에 쓴다. 쓰기 직전에 다시 읽고 이 팔의 이 자리만 고쳐 옆 칸 것을 지우지 않는다.
+        poses = load_poses()
+        poses.setdefault(self.arm.name, {})[name] = {
+            "pose": self.status["pose"], "joints": self.status["joints"], "d": self.status["d"],
+            "time": datetime.now().astimezone().isoformat(timespec="seconds")}
+        save_poses(poses)
         p = self.status["pose"]
         self.term.say("저장 %s/%s  X %.2f Y %.2f Z %.2f C %.2f" % (self.arm.name, name, p["x"], p["y"], p["z"], p["c"]))
 
     def list_poses(self):
-        mine = self.poses.get(self.arm.name, {})
+        mine = load_poses().get(self.arm.name, {})
         if not mine:
             self.term.say("%s에 저장한 자리가 없다" % self.arm.name)
             return
@@ -265,7 +275,7 @@ class Teleop:
         if why is not None:
             self.term.say(why or "팔이 움직이는 중이다")
             return
-        mine = self.poses.get(self.arm.name, {})
+        mine = load_poses().get(self.arm.name, {})
         if not mine:
             self.term.say("%s에 저장한 자리가 없다" % self.arm.name)
             return
@@ -290,7 +300,9 @@ class Teleop:
             self.term.say("팔이 답하지 않는다")
             return
         self.cfg["safe_z_mm"] = round(self.status["pose"]["z"], 1)
-        mb.save_config(self.cfg)
+        fresh = mb.load_config()
+        fresh["safe_z_mm"] = self.cfg["safe_z_mm"]
+        mb.save_config(fresh)
         self.term.say("안전 높이 Z %.1f mm로 정했다 (config/arms.json)" % self.cfg["safe_z_mm"])
 
     def on_key(self, key):
@@ -310,10 +322,15 @@ class Teleop:
             self.step = STEPS[min(STEPS.index(self.step) + 1, len(STEPS) - 1)]
         elif key == "-":
             self.step = STEPS[max(STEPS.index(self.step) - 1, 0)]
+        elif key.isdigit() and self.only:
+            self.term.say("이 칸은 %s만 조종한다. 다른 팔은 옆 칸에서 다룬다" % self.arm.name)
         elif key.isdigit() and 1 <= int(key) <= len(self.order):
             self.arm = self.arms[self.order[int(key) - 1]]
             self.status = None
             self.term.say("%s: %s" % (self.arm.name, self.arm.label))
+        elif key.isdigit():
+            self.term.say("%s번 팔이 없다. config/arms.json의 팔: %s (arm.md의 컨트롤러가 둘일 때)" % (
+                key, ", ".join("%d %s" % (i + 1, n) for i, n in enumerate(self.order))))
         elif key == "p":
             self.toggle_pump()
         elif key == "b":
@@ -340,6 +357,8 @@ class Teleop:
         return True
 
     def status_line(self):
+        if shutil.get_terminal_size().columns < 70:
+            return self.short_status()
         safe = self.cfg.get("safe_z_mm")
         head = "%s | " % self.arm.name
         tail = " | 칸 %g | 안전 Z %s" % (self.step, "-" if safe is None else "%g" % safe)
@@ -349,16 +368,39 @@ class Teleop:
             return head + "답 없음" + tail
         return head + mb.describe(self.status) + tail
 
+    def short_status(self):
+        """좁은 칸(두 팔을 나란히 띄울 때)의 상태 줄."""
+        text = "%s %s 칸%g" % (self.arm.name, "답없음" if self.status is None else compact(self.status), self.step)
+        if self.halted:
+            text += " 명령막음"
+        return text
+
+
+def compact(status):
+    p = status["pose"]
+    return "%s X%.1f Y%.1f Z%.1f C%.0f 흡착%s" % (
+        status["state"], p["x"], p["y"], p["z"], p["c"], "켬" if status["pump"] else "끔")
+
 
 def print_keys():
     """키 설명, 안전 높이, 저장한 자리를 보인다. 포트를 열지 않는다. arm.sh 설명 칸이 1초마다 부른다."""
     print("키 (한/영은 영문으로, 키는 조종 칸에서 누른다)")
-    for keys, _, text in KEY_HELP:
-        # 한글 "스페이스"는 두 칸씩 차지해서 글자 수로 맞추면 줄이 어긋난다. 보이는 폭으로 맞춘다.
-        print("  %s%s%s" % (keys, " " * max(10 - width(keys), 1), text))
+    # 한글 "스페이스"는 두 칸씩 차지해서 글자 수로 맞추면 줄이 어긋난다. 보이는 폭으로 맞춘다.
+    cells = ["  %s%s%s" % (k, " " * max(10 - width(k), 1), text) for k, _, text in KEY_HELP]
+    col = max(width(c) for c in cells) + 2
+    if shutil.get_terminal_size().columns >= 2 * col:
+        # 넓은 칸(위쪽 가로 칸)이면 두 줄로 나눠 높이를 줄인다.
+        half = (len(cells) + 1) // 2
+        for left, right in zip(cells[:half], cells[half:] + [""]):
+            print(left + " " * (col - width(left)) + right)
+    else:
+        for c in cells:
+            print(c)
     cfg = mb.load_config()
     show = lambda v: "-" if v is None else "%g mm" % v
     print()
+    for i, (name, a) in enumerate(cfg["arms"].items(), 1):
+        print("팔 %d  %-5s 컨트롤러 %s" % (i, name, a.get("controller") or cfg["port"]))
     print("안전 높이 %s   하한 Z %s   속도 %s mm/min" % (
         show(cfg.get("safe_z_mm")), show(cfg.get("z_min_mm")), cfg.get("feed_mm_min")))
     print()
@@ -377,6 +419,7 @@ def main():
     ap = argparse.ArgumentParser(description="키보드로 Mirobot 조종·자리 저장")
     ap.add_argument("--arm", help="처음 조종할 팔 이름. 없으면 config/arms.json의 첫 팔")
     ap.add_argument("--keys", action="store_true", help="키 설명과 저장한 자리만 보이고 끝낸다")
+    ap.add_argument("--only", action="store_true", help="--arm의 팔과 그 컨트롤러만 연다. 팔마다 칸을 따로 띄울 때")
     args = ap.parse_args()
     if args.keys:
         return print_keys()
@@ -392,15 +435,19 @@ def main():
         print("그런 팔이 없다: %s (%s)" % (start, ", ".join(cfg["arms"])))
         return 1
     try:
-        ctrl, arms, port = mb.open_arms(cfg)
+        ctrls, arms = mb.open_arms(cfg, only=start if args.only else None)
     except serial.SerialException as exc:
         hint = " (라인이나 다른 프로그램이 포트를 쓰고 있으면 끈다)" if "busy" in str(exc).lower() else ""
         print("포트를 열지 못했다: %s%s" % (exc, hint))
         return 1
     with Terminal() as term:
-        tele = Teleop(cfg, ctrl, arms, start, term)
-        term.say("컨트롤러 %s, 팔 %s" % (port, ", ".join(arms)))
-        term.say(HELP)
+        tele = Teleop(cfg, arms, start, term, only=args.only)
+        for port, ctrl in ctrls.items():
+            term.say("컨트롤러 %s: %s" % (port, ", ".join(n for n, a in arms.items() if a.ctrl is ctrl)))
+        if args.only:
+            term.say("%s 전용 칸. 키 설명은 설명 칸에 있다" % start)
+        else:
+            term.say(HELP)
         next_poll = 0.0
         try:
             while True:
@@ -424,7 +471,8 @@ def main():
         finally:
             if tele.status is not None and tele.status["pump"]:
                 term.say("흡착이 켜진 채로 끝낸다. 부품을 들고 있으면 조심한다")
-            ctrl.ser.close()
+            for ctrl in ctrls.values():
+                ctrl.ser.close()
     return 0
 
 

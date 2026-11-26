@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-# 벨트 방향이 화면의 어느 축인지, D 1 mm에 몇 px 움직이는지 재서 config/line.yaml에 쓴다.
+# 벨트 방향이 화면의 어느 축인지, D 1 mm에 몇 px 움직이는지 재서 그 라인의 보정 파일에 쓴다.
+# 라인은 config/devices.json의 lines 이름이다. line1이면 config/line.yaml, line2면 config/line2.yaml이다.
 # 측정 범위 중앙에서 SEARCH_ROI 가운데도 읽어 함께 쓴다.
 #
 # 준비: launch를 띄워 둔다(conveyor_node와 block_bridge_node가 떠 있어야 한다).
 #       벨트 위 측정 범위 안에 블럭을 하나만 둔다. Mirobot은 Idle이어야 한다.
 #   python3 calibrate_belt.py
 #   python3 calibrate_belt.py --mm 30 --dry-run
+#   python3 calibrate_belt.py --line line2      # 그 라인의 namespace 토픽을 보고 그 라인 보정 파일에 쓴다
 #
 # 블럭이 카메라 끝으로 밀려나지 않게 반대(+) 방향으로 --mm만큼 옮겨 재고, 다시 되돌린다.
 
@@ -20,15 +22,16 @@ import yaml
 from rclpy.node import Node
 from std_msgs.msg import Bool, Float32, String
 
+import devices
+
 ROOT = Path(__file__).resolve().parent
-CONFIG = ROOT / "config" / "line.yaml"
 BLOCK_RE = re.compile(r"([A-Z]+)@(-?\d+),(-?\d+)")
 ROI_RE = re.compile(r"^SEARCH_ROI\s*=\s*\((\d+),\s*(\d+),\s*(\d+),\s*(\d+)\)", re.M)
 
 
 class Calibrator(Node):
-    def __init__(self):
-        super().__init__("calibrate_belt")
+    def __init__(self, namespace=""):
+        super().__init__("calibrate_belt", namespace="/" + namespace if namespace else None)
         self.blocks = []
         self.position = None
         self.moving = True
@@ -86,10 +89,16 @@ def main():
     parser = argparse.ArgumentParser(description="벨트 방향·축척 측정")
     parser.add_argument("--mm", type=float, default=30.0, help="잴 때 옮기는 거리(카메라 반대쪽)")
     parser.add_argument("--dry-run", action="store_true", help="결과만 보이고 파일은 쓰지 않는다")
+    parser.add_argument("--line", default="line1", help="config/devices.json의 라인 이름")
     args = parser.parse_args()
+    try:
+        line = devices.line(args.line)
+    except devices.DeviceError as exc:
+        sys.exit(str(exc))
+    config = ROOT / line["params"]
 
     rclpy.init()
-    node = Calibrator()
+    node = Calibrator(line.get("namespace", ""))
     try:
         if not node.wait_still():
             sys.exit("벨트 위치를 받지 못했다. launch의 conveyor_node가 떠 있는지 본다")
@@ -118,7 +127,7 @@ def main():
             print("경고: 벨트가 화면 축과 꽤 비스듬하다. 카메라 방향을 확인한다")
 
         roi = ROI_RE.search((ROOT / "camera-ros.py").read_text(encoding="utf-8"))
-        data = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+        data = yaml.safe_load(config.read_text(encoding="utf-8"))
         params = data["line_controller"]["ros__parameters"]
         params["axis"] = axis
         params["px_per_mm"] = round(px_per_mm, 4)
@@ -130,15 +139,15 @@ def main():
         if args.dry_run:
             print("--dry-run이라 파일은 그대로 둔다")
             return 0
-        text = CONFIG.read_text(encoding="utf-8")
+        text = config.read_text(encoding="utf-8")
         # 주석을 남기려고 값만 바꾼다.
         for key in ("axis", "px_per_mm", "center_x", "center_y"):
             # axis는 따옴표로 쓴다. YAML은 맨 y를 참(yes)으로 읽는다.
             value = '"%s"' % params[key] if key == "axis" else str(params[key])
             text = re.sub(r"(^\s*%s:\s*)([^\s#]+)" % key, lambda m: m.group(1) + value,
                           text, count=1, flags=re.M)
-        CONFIG.write_text(text, encoding="utf-8")
-        print("%s에 썼다" % CONFIG)
+        config.write_text(text, encoding="utf-8")
+        print("%s에 썼다" % config)
     finally:
         node.destroy_node()
         if rclpy.ok():

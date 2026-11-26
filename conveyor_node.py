@@ -6,7 +6,8 @@
 #
 #   python3 conveyor_node.py --ros-args -p pause_sec:=2.0
 #   python3 conveyor_node.py --ros-args -p mode:=ms4220 -p port:=/dev/ttyUSB0 -p address:=10
-# port를 주지 않으면(auto) /dev/serial/by-id에서 CH340 컨트롤러를 찾는다.
+# port는 경로, config/devices.json의 컨트롤러 이름(ctrl1 …), auto(CH340이 한 대일 때만) 가운데 하나다.
+# 두 벌 라인은 launch의 line:=line2가 컨트롤러 이름과 namespace를 정한다.
 #
 # 구독
 #   /conveyor/speed  std_msgs/Int32  -100~100, 부호가 방향, 0이 정지

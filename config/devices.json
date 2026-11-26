@@ -1,0 +1,36 @@
+{
+  "controllers": {
+    "ctrl1": {
+      "port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:3:1.0-port0",
+      "note": "팔1(2026-11-26 tmux에서 w로 움직인 팔)이 붙은 컨트롤러. 왼쪽 USB 자리 기준 이름이라 같은 자리에 꽂는다"
+    },
+    "ctrl2": {
+      "port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:4:1.0-port0",
+      "note": "팔2가 붙은 컨트롤러(2026-11-26 11:12에 꽂음). USB 자리 기준 이름이라 같은 자리에 꽂는다"
+    }
+  },
+  "cameras": {
+    "cam1": {
+      "port": "auto",
+      "note": "벨트1 측정용 OpenMV. 두 대가 되면 by-id로 적는다"
+    },
+    "cam2": {
+      "port": "",
+      "note": "벨트2(또는 머플러 회전 자리)용 OpenMV. 꽂은 뒤 by-id를 적는다"
+    }
+  },
+  "lines": {
+    "line1": {
+      "namespace": "",
+      "controller": "ctrl1",
+      "camera": "cam1",
+      "params": "config/line.yaml"
+    },
+    "line2": {
+      "namespace": "line2",
+      "controller": "ctrl2",
+      "camera": "cam2",
+      "params": "config/line2.yaml"
+    }
+  }
+}
