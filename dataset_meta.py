@@ -1,4 +1,4 @@
-# 학습 데이터 폴더의 기록 형식이다. capture_dataset.py와 split_dataset.py가 같이 쓴다.
+# 판정 데이터 폴더의 기록 형식이다. capture_dataset.py와 split_dataset.py가 같이 쓴다.
 # 각 칸의 뜻과 예시는 dataset.md에 있다.
 #
 #   dataset/rig.json                 장비 기록. 카메라·링 높이, 조명. 바꾸면 고친다

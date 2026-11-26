@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 학습용 원본 프레임을 모은다. 카메라에 camera-capture.py를 올리고, 받은 프레임을
+# 판정용 원본 프레임을 모은다. 카메라에 camera-capture.py를 올리고, 받은 프레임을
 # dataset/frames/<부품 ID>/ 아래에 PNG와 기록 JSON으로 남긴다.
 # 키는 터미널에서 받는다. tmux에서는 capture.sh로 띄운다.
 # IDE가 카메라 포트를 잡고 있으면 연결하지 못하니 IDE 연결을 끊고 실행한다.
@@ -505,7 +505,7 @@ class Capture:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="학습용 원본 프레임 수집")
+    ap = argparse.ArgumentParser(description="판정용 원본 프레임 수집")
     ap.add_argument("--part", required=True, help="부품 ID. 영문·숫자·하이픈")
     ap.add_argument("--port", default="auto")
     ap.add_argument("--protocol", default="auto", choices=("auto", "legacy", "new"))

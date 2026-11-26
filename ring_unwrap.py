@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # 카메라 화면에 비친 링을 찾아 띠로 편다. 원은 곧은 가로 띠가 되고, 꺾인 자리는 혹으로 남는다.
-# 학습에 넣기 전 전처리이자, 꺾임을 숫자로 보는 기준선이다.
+# ring_judge.py가 이 띠와 꺾임으로 불량을 가린다.
 #
 #   python3 ring_unwrap.py dataset/frames/P003/P003_000012_dent_d0.6_w10_e7498.png
 #   python3 ring_unwrap.py a.png --out strip.png --debug circle.png
