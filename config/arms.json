@@ -1,0 +1,14 @@
+{
+  "port": "auto",
+  "baud": 115200,
+  "arms": {
+    "arm1": {
+      "address": null,
+      "label": "접두어 없이 답하는 팔 (벨트 D축이 붙은 팔)"
+    }
+  },
+  "belt_arm": "arm1",
+  "feed_mm_min": 2000,
+  "z_min_mm": null,
+  "safe_z_mm": null
+}
