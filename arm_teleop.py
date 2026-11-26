@@ -32,7 +32,7 @@ from datetime import datetime
 import serial
 
 import mirobot as mb
-from term_keys import Terminal
+from term_keys import Terminal, width
 
 POSES = mb.ROOT / "config" / "arm_poses.json"
 STEPS = (1.0, 5.0, 10.0, 20.0)
@@ -48,8 +48,27 @@ CHECK_SEC = 1.5
 HALT_REPLIES = ("SDing",)
 JOG = {"w": (1, 0, 0, 0), "s": (-1, 0, 0, 0), "a": (0, 1, 0, 0), "d": (0, -1, 0, 0),
        "r": (0, 0, 1, 0), "f": (0, 0, -1, 0), "z": (0, 0, 0, 1), "c": (0, 0, 0, -1)}
-HELP = ("1 2 팔  w s X  a d Y  r f Z  z c 회전  + - 칸  p 흡착  b 놓기  , . 벨트  "
-        "스페이스 저장  g 가기  l 목록  t 안전높이  h 원점  q 끝")
+# 키 설명은 여기 한 곳에만 둔다. (키, 짧은 이름, 설명). 짧은 이름은 조종 칸의 한 줄 도움말,
+# 설명은 arm.sh 설명 칸(--keys)이 쓴다.
+KEY_HELP = (
+    ("1 2", "팔", "조종할 팔 고르기"),
+    ("w s", "X", "X +/-"),
+    ("a d", "Y", "Y +/-"),
+    ("r f", "Z", "Z +/- (위·아래)"),
+    ("z c", "회전", "끝단 회전 C +/-"),
+    ("+ -", "칸", "한 칸 크기 1 → 5 → 10 → 20"),
+    ("p", "흡착", "흡착 켜기/끄기"),
+    ("b", "놓기", "0.5초 불어서 놓기"),
+    (", .", "벨트", "벨트 -/+ 10 mm (- 가 카메라 쪽)"),
+    ("스페이스", "저장", "지금 자리를 이름 붙여 저장"),
+    ("g", "가기", "저장한 자리로 가기 (올라 → 옮기고 → 내려감)"),
+    ("l", "목록", "저장한 자리 목록"),
+    ("t", "안전높이", "지금 Z를 안전 높이로 정하기"),
+    ("h → y", "원점", "원점 복귀 (y로 한 번 더 확인)"),
+    ("?", "도움말", "이 목록을 조종 칸에 한 줄로"),
+    ("q", "끝", "끝내기"),
+)
+HELP = "  ".join("%s %s" % (k, short) for k, short, _ in KEY_HELP)
 
 
 def load_poses():
@@ -331,26 +350,36 @@ class Teleop:
         return head + mb.describe(self.status) + tail
 
 
-def print_poses():
-    """저장한 자리를 팔마다 보인다. 포트를 열지 않는다. arm.sh 아래 칸이 1초마다 부른다."""
+def print_keys():
+    """키 설명, 안전 높이, 저장한 자리를 보인다. 포트를 열지 않는다. arm.sh 설명 칸이 1초마다 부른다."""
+    print("키 (한/영은 영문으로, 키는 조종 칸에서 누른다)")
+    for keys, _, text in KEY_HELP:
+        # 한글 "스페이스"는 두 칸씩 차지해서 글자 수로 맞추면 줄이 어긋난다. 보이는 폭으로 맞춘다.
+        print("  %s%s%s" % (keys, " " * max(10 - width(keys), 1), text))
+    cfg = mb.load_config()
+    show = lambda v: "-" if v is None else "%g mm" % v
+    print()
+    print("안전 높이 %s   하한 Z %s   속도 %s mm/min" % (
+        show(cfg.get("safe_z_mm")), show(cfg.get("z_min_mm")), cfg.get("feed_mm_min")))
+    print()
     poses = load_poses()
     if not poses:
         print("저장한 자리 없음")
     for arm, mine in poses.items():
-        print(arm)
+        print("저장한 자리 %s" % arm)
         for name, rec in mine.items():
             p = rec["pose"]
-            print("  %-12s X %7.2f Y %7.2f Z %7.2f C %7.2f" % (name, p["x"], p["y"], p["z"], p["c"]))
+            print("  %-10s X %7.2f Y %7.2f Z %7.2f C %7.2f" % (name, p["x"], p["y"], p["z"], p["c"]))
     return 0
 
 
 def main():
     ap = argparse.ArgumentParser(description="키보드로 Mirobot 조종·자리 저장")
     ap.add_argument("--arm", help="처음 조종할 팔 이름. 없으면 config/arms.json의 첫 팔")
-    ap.add_argument("--poses", action="store_true", help="저장한 자리만 보이고 끝낸다")
+    ap.add_argument("--keys", action="store_true", help="키 설명과 저장한 자리만 보이고 끝낸다")
     args = ap.parse_args()
-    if args.poses:
-        return print_poses()
+    if args.keys:
+        return print_keys()
     if not sys.stdin.isatty():
         print("키 입력을 받을 터미널이 없다. 터미널에서 직접 실행한다")
         return 1

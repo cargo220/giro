@@ -11,6 +11,11 @@ import tty
 import unicodedata
 
 
+def width(text):
+    """터미널에서 보이는 폭. 한글처럼 넓은 글자는 두 칸으로 센다."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
 def clip(text, cols):
     """터미널 한 줄에 들어가게 자른다. 한글은 두 칸으로 센다."""
     out, width = [], 0
